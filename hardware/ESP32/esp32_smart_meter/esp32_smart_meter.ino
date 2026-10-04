@@ -16,7 +16,7 @@ const char *WIFI_PASSWORD = "12345678";
 
 // ==================== BACKEND ====================
 
-const char *SERVER_URL = "http://10.37.118.33:11020/api/live-data";
+const char *SERVER_URL = "http://172.20.32.33:11020/api/live-data";
 
 const char *DEVICE_ID = "ESP32-GRID-NODE-01";
 

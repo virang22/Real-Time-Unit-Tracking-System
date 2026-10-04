@@ -101,8 +101,7 @@ export default function AnalyticsPage() {
   }, [selectedMonth]);
 
   const isOnline = Boolean(
-    telemetry.gridStatus !== "OFFLINE" && telemetry.updatedAt &&
-    Date.now() - new Date(telemetry.updatedAt).getTime() < 10000
+    telemetry.gridStatus && telemetry.gridStatus !== "OFFLINE"
   );
   const livePowerKw = isOnline ? Number((Number(telemetry.power || 0) / 1000).toFixed(2)) : 0;
   const weeklyKwh = energyAnalysis.weekDaily;

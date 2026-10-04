@@ -197,11 +197,9 @@ export default function DashboardPage() {
     }
   }, [energyLimit, telemetry.energy]);
 
-  // Consider online if telemetry was received within the last 10 seconds and gridStatus is not OFFLINE
+  // Consider online if gridStatus returned from backend is not OFFLINE
   const isOnline = Boolean(
-    telemetry.gridStatus !== "OFFLINE" &&
-    telemetry.updatedAt &&
-    currentTime - new Date(telemetry.updatedAt).getTime() < 10000
+    telemetry.gridStatus && telemetry.gridStatus !== "OFFLINE"
   );
 
   const deviceDisplayName = isOnline
