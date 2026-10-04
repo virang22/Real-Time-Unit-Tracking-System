@@ -11,6 +11,7 @@ import SupportPage from "../pages/SupportPage";
 import LogsPage from "../pages/LogsPage";
 import AlertsPage from "../pages/AlertsPage";
 import DevicesPage from "../pages/DevicesPage";
+import ElectricityBillsPage from "../pages/ElectricityBillsPage";
 import GridShellLayout from "../components/dashboard/GridShellLayout";
 import ProtectedRoute from "./ProtectedRoute";
 import { getToken } from "../utils/token";
@@ -33,6 +34,7 @@ export default function AppRoutes() {
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/analytics" element={<AnalyticsPage />} />
         <Route path="/wallet" element={<WalletPage />} />
+        <Route path="/bills" element={<ElectricityBillsPage />} />
         <Route path="/p2p" element={<P2PPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/deploy" element={<DeployContractPage />} />

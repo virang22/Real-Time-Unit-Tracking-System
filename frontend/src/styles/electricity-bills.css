@@ -1,0 +1,348 @@
+.ebill-page {
+  display: grid;
+  gap: 18px;
+  color: #172033;
+}
+
+.ebill-generator,
+.ebill-document,
+.ebill-history {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.ebill-section-head,
+.ebill-document-head,
+.ebill-form-footer,
+.ebill-document-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.ebill-section-head h2,
+.ebill-document-head h2 {
+  margin: 0;
+  color: #172033;
+  font-size: 1.08rem;
+}
+
+.ebill-section-head p,
+.ebill-document-head p {
+  margin: 5px 0 0;
+  color: #64748b;
+  font-size: 0.86rem;
+}
+
+.ebill-meter-id,
+.ebill-transaction {
+  color: #64748b;
+  font-size: 0.82rem;
+}
+
+.ebill-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr));
+  gap: 14px;
+  margin-top: 20px;
+}
+
+.ebill-field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  color: #475569;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.ebill-field input,
+.ebill-field select {
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: #172033;
+  font: inherit;
+}
+
+.ebill-checkbox-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ebill-checkbox-field input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: #176b57;
+}
+
+.ebill-tariff-note,
+.ebill-config-warning {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  font-size: 0.8rem;
+}
+
+.ebill-tariff-note {
+  color: #64748b;
+}
+
+.ebill-tariff-note a {
+  color: #176b57;
+  font-weight: 700;
+}
+
+.ebill-config-warning {
+  display: block;
+  padding: 11px 13px;
+  border: 1px solid #f3d39b;
+  border-radius: 6px;
+  background: #fff8e8;
+  color: #7b4e00;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.ebill-form-footer {
+  margin-top: 18px;
+  color: #64748b;
+  font-size: 0.82rem;
+}
+
+.ebill-primary {
+  min-height: 40px;
+  padding: 9px 15px;
+  border: 0;
+  border-radius: 6px;
+  background: #176b57;
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ebill-primary:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.ebill-document-head {
+  align-items: flex-start;
+  padding-bottom: 17px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.ebill-eyebrow {
+  margin: 0 0 6px !important;
+  color: #176b57 !important;
+  font-size: 0.72rem !important;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.ebill-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 9px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.ebill-status--pending {
+  background: #fff7db;
+  color: #8a5a00;
+}
+
+.ebill-status--overdue {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.ebill-status--paid {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.ebill-reading-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr));
+  gap: 16px;
+  padding: 18px 0;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.ebill-reading-grid > div {
+  display: grid;
+  gap: 5px;
+}
+
+.ebill-reading-grid span,
+.ebill-charges span {
+  color: #64748b;
+  font-size: 0.82rem;
+}
+
+.ebill-reading-grid strong {
+  font-size: 1rem;
+}
+
+.ebill-reading-grid small {
+  color: #94a3b8;
+  font-size: 0.74rem;
+}
+
+.ebill-charges {
+  display: grid;
+  gap: 12px;
+  padding: 17px 0;
+}
+
+.ebill-charges > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.ebill-charges strong {
+  white-space: nowrap;
+}
+
+.ebill-charges .ebill-total {
+  padding-top: 13px;
+  border-top: 1px solid #cbd5e1;
+  color: #172033;
+  font-size: 1.05rem;
+  font-weight: 800;
+}
+
+.ebill-document-footer {
+  padding-top: 14px;
+  border-top: 1px solid #e2e8f0;
+  color: #475569;
+  font-size: 0.86rem;
+}
+
+.ebill-document-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.ebill-secondary {
+  min-height: 40px;
+  padding: 8px 13px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: #334155;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ebill-paid-detail {
+  color: #166534;
+  font-weight: 700;
+}
+
+.ebill-demo-note {
+  margin: 12px 0 0;
+  color: #64748b;
+  font-size: 0.74rem;
+}
+
+.ebill-transaction {
+  margin: 10px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.ebill-history .ebill-section-head {
+  margin-bottom: 14px;
+}
+
+.ebill-table-wrap {
+  overflow-x: auto;
+}
+
+.ebill-table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ebill-table-wrap th,
+.ebill-table-wrap td {
+  padding: 11px 10px;
+  border-top: 1px solid #e2e8f0;
+  font-size: 0.82rem;
+}
+
+.ebill-table-wrap th {
+  color: #64748b;
+  font-weight: 700;
+}
+
+.ebill-view-button {
+  padding: 5px 8px;
+  border: 0;
+  background: transparent;
+  color: #176b57;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ebill-empty {
+  margin: 0;
+  padding: 18px 0 4px;
+  color: #64748b;
+  font-size: 0.86rem;
+}
+
+.ebill-error {
+  padding: 12px 14px;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  background: #fef2f2;
+  color: #991b1b;
+  font-size: 0.86rem;
+}
+
+@media (max-width: 640px) {
+  .ebill-generator,
+  .ebill-document,
+  .ebill-history {
+    padding: 15px;
+  }
+
+  .ebill-section-head,
+  .ebill-form-footer,
+  .ebill-document-footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .ebill-document-head {
+    align-items: flex-start;
+  }
+
+  .ebill-document-actions {
+    justify-content: flex-start;
+  }
+}

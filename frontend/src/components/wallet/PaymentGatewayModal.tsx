@@ -9,23 +9,35 @@ export type PaymentSuccessData = {
   timestamp: string;
 };
 
+type PaymentPurpose = "wallet" | "bill";
+
 interface PaymentGatewayModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSuccess: (data: PaymentSuccessData) => void;
+  onSuccess: (data: PaymentSuccessData) => void | Promise<void>;
+  purpose?: PaymentPurpose;
+  initialAmount?: number;
+  lockAmount?: boolean;
 }
 
 type PaymentTab = "upi" | "card" | "netbanking" | "crypto";
 
 const PRESET_AMOUNTS = [1000, 2000, 3000, 5000, 10000];
 
+function formatInr(amount: number) {
+  return `₹${amount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 export default function PaymentGatewayModal({
   isOpen,
   onClose,
   onSuccess,
+  purpose = "wallet",
+  initialAmount,
+  lockAmount = false,
 }: PaymentGatewayModalProps) {
-  const [amount, setAmount] = useState<number>(2000);
-  const [customInput, setCustomInput] = useState<string>("2000");
+  const [amount, setAmount] = useState<number>(initialAmount ?? 2000);
+  const [customInput, setCustomInput] = useState<string>(String(initialAmount ?? 2000));
   const [activeTab, setActiveTab] = useState<PaymentTab>("upi");
 
   // Form states
@@ -118,20 +130,22 @@ export default function PaymentGatewayModal({
       setProcessingStep(2);
       setTimeout(() => {
         setProcessingStep(3);
-        setTimeout(() => {
+        setTimeout(async () => {
           const txnId = `TXN_GRID_${Math.floor(100000000 + Math.random() * 900000000)}`;
-          setGeneratedTxnId(txnId);
-          setStatus("success");
-
-          // Update local wallet balance
-          addRealtimeBalanceInr(amount);
-
-          onSuccess({
-            amountInr: amount,
-            paymentMethod: methodLabel,
-            transactionId: txnId,
-            timestamp: "Just now",
-          });
+          try {
+            if (purpose === "wallet") addRealtimeBalanceInr(amount);
+            await onSuccess({
+              amountInr: amount,
+              paymentMethod: methodLabel,
+              transactionId: txnId,
+              timestamp: "Just now",
+            });
+            setGeneratedTxnId(txnId);
+            setStatus("success");
+          } catch {
+            setStatus("idle");
+            setErrorMessage("Payment could not be recorded. Please try again.");
+          }
         }, 800);
       }, 900);
     }, 800);
@@ -140,8 +154,8 @@ export default function PaymentGatewayModal({
   const handlePayNow = () => {
     setErrorMessage("");
 
-    if (!amount || amount < 100) {
-      setErrorMessage("Please enter an amount of at least ₹100.");
+    if (!amount || amount <= 0 || (purpose === "wallet" && amount < 100)) {
+      setErrorMessage(purpose === "bill" ? "The bill amount must be greater than ₹0." : "Please enter an amount of at least ₹100.");
       return;
     }
 
@@ -242,7 +256,8 @@ export default function PaymentGatewayModal({
             <div>
               <h2 className="pg-title">GridOS Secure Payment Gateway</h2>
               <p className="pg-subtitle">
-                <span className="pg-ssl-tag">256-bit SSL</span> Instant Power Credit Settlement
+                <span className="pg-ssl-tag">{purpose === "bill" ? "Demo" : "256-bit SSL"}</span>{" "}
+                {purpose === "bill" ? "Electricity bill payment" : "Instant Power Credit Settlement"}
               </p>
             </div>
           </div>
@@ -256,6 +271,12 @@ export default function PaymentGatewayModal({
           </button>
         </div>
 
+        {purpose === "bill" && (
+          <p role="note" style={{ margin: "12px 24px 0", color: "#92400e", fontSize: "0.78rem" }}>
+            Demo payment only. This project is not connected to a payment processor; no real funds are transferred.
+          </p>
+        )}
+
         {status === "awaiting_approval" ? (
           <div className="pg-awaiting-view">
             <div className="pg-awaiting-pulse">
@@ -263,7 +284,7 @@ export default function PaymentGatewayModal({
             </div>
             <h3 className="pg-awaiting-title">Payment Request Sent!</h3>
             <p className="pg-awaiting-desc">
-              We have sent an instant collect request for <strong>₹{amount.toLocaleString("en-IN")}.00</strong> to your UPI ID.
+              We have sent an instant collect request for <strong>{formatInr(amount)}</strong> to your UPI ID.
               Please open your UPI app to approve the payment.
             </p>
 
@@ -302,8 +323,10 @@ export default function PaymentGatewayModal({
         ) : status === "processing" ? (
           <div className="pg-processing-view">
             <div className="pg-spinner" />
-            <h3 className="pg-proc-title">Verifying Payment with Bank</h3>
-            <p className="pg-proc-desc">Please do not refresh or close this window...</p>
+              <h3 className="pg-proc-title">{purpose === "bill" ? "Processing demo bill payment" : "Verifying Payment with Bank"}</h3>
+              <p className="pg-proc-desc">
+                {purpose === "bill" ? "This project uses a simulated payment flow." : "Please do not refresh or close this window..."}
+              </p>
 
             <div className="pg-proc-steps">
               <div className={`pg-step ${processingStep >= 1 ? "is-active" : ""}`}>
@@ -329,13 +352,15 @@ export default function PaymentGatewayModal({
             </div>
             <h3 className="pg-success-title">Payment Successful!</h3>
             <p className="pg-success-desc">
-              Your prepaid energy credit has been updated and activated.
+              {purpose === "bill"
+                ? "Demo payment recorded. No real money was transferred."
+                : "Your prepaid energy credit has been updated and activated."}
             </p>
 
             <div className="pg-receipt-card">
               <div className="pg-receipt-row">
                 <span>Amount Paid</span>
-                <strong className="pg-highlight-green">₹{amount.toLocaleString("en-IN")}.00</strong>
+                  <strong className="pg-highlight-green">{formatInr(amount)}</strong>
               </div>
               <div className="pg-receipt-row">
                 <span>Transaction ID</span>
@@ -365,6 +390,7 @@ export default function PaymentGatewayModal({
                   <button
                     key={val}
                     type="button"
+                    disabled={lockAmount}
                     className={`pg-preset-btn ${amount === val ? "is-selected" : ""}`}
                     onClick={() => handleAmountSelect(val)}
                   >
@@ -379,6 +405,7 @@ export default function PaymentGatewayModal({
                   type="text"
                   className="pg-custom-amount-input"
                   placeholder="Enter custom amount"
+                  disabled={lockAmount}
                   value={customInput}
                   onChange={handleCustomAmountChange}
                 />
@@ -545,7 +572,7 @@ export default function PaymentGatewayModal({
                             <rect x="42" y="66" width="14" height="22" fill="#38bdf8" />
                             <rect x="62" y="64" width="26" height="24" fill="#38bdf8" />
                           </svg>
-                          <span className="pg-qr-badge">Scan & Pay ₹{amount}</span>
+                          <span className="pg-qr-badge">Scan & Pay {formatInr(amount)}</span>
                         </div>
 
                         <div style={{ flex: 1 }}>
@@ -553,7 +580,7 @@ export default function PaymentGatewayModal({
                             Scan QR with any UPI App:
                           </p>
                           <p style={{ margin: "0 0 10px", fontSize: "0.78rem", color: "#64748b", lineHeight: 1.4 }}>
-                            Pay ₹{amount.toLocaleString("en-IN")} and enter the 12-digit UTR/Reference number from your receipt:
+                            Pay {formatInr(amount)} and enter the 12-digit UTR/Reference number from your receipt:
                           </p>
                           <input
                             type="text"
@@ -729,7 +756,7 @@ export default function PaymentGatewayModal({
               <div className="pg-summary-strip">
                 <div>
                   <span className="pg-summary-label">Total Payable:</span>
-                  <strong className="pg-summary-amount">₹{amount.toLocaleString("en-IN")}.00</strong>
+                  <strong className="pg-summary-amount">{formatInr(amount)}</strong>
                 </div>
                 <div className="pg-zero-fee-tag">Zero Gateway Fee</div>
               </div>
@@ -740,7 +767,7 @@ export default function PaymentGatewayModal({
                 onClick={handlePayNow}
                 disabled={amount <= 0}
               >
-                <span>🔒 Pay ₹{amount.toLocaleString("en-IN")} Now</span>
+                <span>🔒 Pay {formatInr(amount)} Now</span>
               </button>
             </div>
           </div>

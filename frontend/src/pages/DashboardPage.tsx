@@ -4,6 +4,10 @@ import { getToken } from "../utils/token";
 import { playAlarmSound } from "../utils/alertSound";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:11020/api";
+const configuredHighPowerThreshold = Number(import.meta.env.VITE_HIGH_POWER_THRESHOLD_W);
+const HIGH_POWER_THRESHOLD_W = Number.isFinite(configuredHighPowerThreshold) && configuredHighPowerThreshold > 0
+  ? configuredHighPowerThreshold
+  : 40;
 
 type TelemetryData = {
   deviceId?: string;
@@ -16,6 +20,13 @@ type TelemetryData = {
   gridStatus?: string;
   relayState?: string;
   updatedAt?: string;
+};
+
+type EnergyAnalysis = {
+  today: number | null;
+  thisWeek: number | null;
+  thisMonth: number | null;
+  total: number | null;
 };
 
 export default function DashboardPage() {
@@ -31,11 +42,22 @@ export default function DashboardPage() {
   });
   const [energyHistory, setEnergyHistory] = useState<number[]>([]);
   const [powerHistory, setPowerHistory] = useState<number[]>([]);
+  const [energyAnalysis, setEnergyAnalysis] = useState<EnergyAnalysis>({
+    today: null,
+    thisWeek: null,
+    thisMonth: null,
+    total: null,
+  });
   const [chartMode, setChartMode] = useState<"energy" | "power">("energy");
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [energyLimit, setEnergyLimit] = useState<number | null>(null);
   const [activeEnergyAlert, setActiveEnergyAlert] = useState<{ limit: number; current: number } | null>(null);
+  const [loadChangeAlert, setLoadChangeAlert] = useState<{ from: number; to: number; change: number } | null>(null);
+  const [highPowerAlert, setHighPowerAlert] = useState<number | null>(null);
   const energyAlertShown = useRef(false);
+  const lastPowerSample = useRef<{ power: number; updatedAt: string } | null>(null);
+  const highPowerSamples = useRef(0);
+  const highPowerAlertActive = useRef(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -47,6 +69,44 @@ export default function DashboardPage() {
           setTelemetry((prev) => ({ ...prev, ...data }));
           const valE = Number(data.energy) || 0;
           const valP = Number(data.power) || 0;
+
+          if (data.gridStatus === "OFFLINE" || !data.updatedAt || !Number.isFinite(Number(data.power))) {
+            lastPowerSample.current = null;
+            highPowerSamples.current = 0;
+            highPowerAlertActive.current = false;
+            setHighPowerAlert(null);
+          } else {
+            const previousSample = lastPowerSample.current;
+            const isFreshSample = !previousSample || data.updatedAt !== previousSample.updatedAt;
+            if (!previousSample) {
+              lastPowerSample.current = { power: valP, updatedAt: data.updatedAt };
+            } else if (isFreshSample) {
+              const change = valP - previousSample.power;
+              const threshold = Math.max(3, Math.abs(previousSample.power) * 0.2);
+              if (Math.abs(change) >= threshold) {
+                setLoadChangeAlert({ from: previousSample.power, to: valP, change });
+                lastPowerSample.current = { power: valP, updatedAt: data.updatedAt };
+              } else {
+                lastPowerSample.current = { ...previousSample, updatedAt: data.updatedAt };
+              }
+            }
+
+            if (isFreshSample) {
+              if (valP > HIGH_POWER_THRESHOLD_W) {
+                highPowerSamples.current += 1;
+                if (highPowerSamples.current >= 2 && !highPowerAlertActive.current) {
+                  highPowerAlertActive.current = true;
+                  setHighPowerAlert(valP);
+                }
+              } else {
+                highPowerSamples.current = 0;
+                if (valP <= HIGH_POWER_THRESHOLD_W * 0.95) {
+                  highPowerAlertActive.current = false;
+                  setHighPowerAlert(null);
+                }
+              }
+            }
+          }
 
           setEnergyHistory((prev) => {
             if (prev.length === 0) {
@@ -71,6 +131,15 @@ export default function DashboardPage() {
 
     fetchLiveTelemetry();
 
+    const fetchEnergyAnalysis = async () => {
+      try {
+        const data = await apiRequest<EnergyAnalysis>("/live-data/energy-analysis");
+        if (isMounted && data) setEnergyAnalysis(data);
+      } catch {
+        /* ignore polling errors */
+      }
+    };
+
     const fetchEnergyLimit = async () => {
       const token = getToken() ?? localStorage.getItem("auth_token");
       if (!token) return;
@@ -87,16 +156,25 @@ export default function DashboardPage() {
       }
     };
 
+    void fetchEnergyAnalysis();
     void fetchEnergyLimit();
     const interval = setInterval(fetchLiveTelemetry, 2000);
+    const energyAnalysisInterval = setInterval(fetchEnergyAnalysis, 30000);
     const limitInterval = setInterval(fetchEnergyLimit, 5000);
 
     return () => {
       isMounted = false;
       clearInterval(interval);
+      clearInterval(energyAnalysisInterval);
       clearInterval(limitInterval);
     };
   }, []);
+
+  useEffect(() => {
+    if (!loadChangeAlert) return;
+    const timeout = window.setTimeout(() => setLoadChangeAlert(null), 6000);
+    return () => window.clearTimeout(timeout);
+  }, [loadChangeAlert]);
 
   useEffect(() => {
     if (energyLimit === null || !telemetry.energy) return;
@@ -211,6 +289,14 @@ export default function DashboardPage() {
     { label: "CURRENT", value: isOnline ? `${Number(telemetry.current).toFixed(3)} A` : "—" },
     { label: "POWER",   value: isOnline ? `${Number(telemetry.power).toFixed(2)} W` : "—" }
   ];
+
+  const energyPeriods = [
+    { label: "Today", value: energyAnalysis.today },
+    { label: "This Week", value: energyAnalysis.thisWeek },
+    { label: "This Month", value: energyAnalysis.thisMonth },
+    { label: "Total", value: energyAnalysis.total },
+  ];
+  const maxPeriodEnergy = Math.max(0, ...energyPeriods.map(({ value }) => value ?? 0));
 
   const activeHistory = chartMode === "energy" ? energyHistory : powerHistory;
   const activeVal = chartMode === "energy" ? Number(telemetry.energy || 0) : Number(telemetry.power || 0);
@@ -358,6 +444,41 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {loadChangeAlert && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            margin: "0 0 20px 0",
+            padding: "14px 18px",
+            border: "1px solid #93c5fd",
+            borderRadius: "8px",
+            backgroundColor: "#eff6ff",
+            color: "#1e3a8a",
+            fontWeight: 600,
+          }}
+        >
+          Load Change Detected: {loadChangeAlert.from.toFixed(1)}W {"\u2192"} {loadChangeAlert.to.toFixed(1)}W ({loadChangeAlert.change >= 0 ? "+" : ""}{loadChangeAlert.change.toFixed(1)}W)
+        </div>
+      )}
+
+      {highPowerAlert !== null && (
+        <div
+          role="alert"
+          style={{
+            margin: "0 0 20px 0",
+            padding: "14px 18px",
+            border: "1px solid #fca5a5",
+            borderRadius: "8px",
+            backgroundColor: "#fef2f2",
+            color: "#991b1b",
+            fontWeight: 700,
+          }}
+        >
+          ⚠️ High Power Consumption Detected: {highPowerAlert.toFixed(0)}W
+        </div>
+      )}
+
       <div className="ac-metrics-grid">
         {metrics.map((metric) => (
           <div key={metric.title} className={`ac-metric-card ac-metric-card--${metric.tone}`}>
@@ -454,6 +575,29 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
+
+      <section className="ac-chart-card" style={{ marginTop: 20 }} aria-label="Energy consumption analysis">
+        <h2 className="ac-card-title">Energy Consumption Analysis</h2>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 130px), 1fr))", gap: 18 }}>
+          {energyPeriods.map(({ label, value }) => (
+            <div key={label}>
+              <div className="ac-summary-label">{label}</div>
+              <div className="ac-summary-value" style={{ margin: "8px 0" }}>
+                {value === null ? "—" : value.toFixed(4)} <span>kWh</span>
+              </div>
+              <div style={{ height: 6, overflow: "hidden", borderRadius: 3, background: "rgba(148, 163, 184, 0.2)" }}>
+                <div
+                  style={{
+                    height: "100%",
+                    width: value === null || maxPeriodEnergy === 0 ? "0%" : `${(value / maxPeriodEnergy) * 100}%`,
+                    background: "#2b6deb",
+                  }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
 
       <div className="ac-footer-label">AC Energy Meter By Circuit Diagrams</div>
     </div>

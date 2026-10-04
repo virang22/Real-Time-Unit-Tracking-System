@@ -61,6 +61,10 @@ export default function GridShellLayout() {
             <IconWallet />
             Wallet
           </NavLink>
+          <NavLink to="/bills" className={navClass}>
+            <IconDatabase />
+            Electricity Bills
+          </NavLink>
           <NavLink to="/p2p" className={navClass}>
             <IconSwap />
             P2P Marketplace

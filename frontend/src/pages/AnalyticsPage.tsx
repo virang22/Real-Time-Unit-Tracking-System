@@ -1,103 +1,36 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import Card from "../components/dashboard/Card";
 import MetricGauge from "../components/dashboard/MetricGauge";
-import { IconBattery, IconEv, IconFan } from "../components/dashboard/gridosIcons";
 import { MonthlyLineChart, WeeklyBarChart } from "../components/analytics/UsageCharts";
 import { apiRequest } from "../api/axios";
 
 const WEEKLY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const MONTHLY_LABELS = ["J", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D"];
 
-// Typical daily distribution factors (Mon-Sun)
-const WEEKLY_WEIGHTS = [0.13, 0.15, 0.16, 0.14, 0.18, 0.14, 0.10];
-// Jan-Aug historical kWh
-const HISTORICAL_MONTHS = [245, 218, 285, 264, 312, 348, 362, 335];
+function getMonthValue(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function formatMonthLabel(value: string) {
+  const [year, month] = value.split("-").map(Number);
+  return new Date(year, month - 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+}
 
 type TelemetryData = {
   power?: number;
   energy?: number;
   voltage?: number;
   current?: number;
+  frequency?: number;
+  powerFactor?: number;
   gridStatus?: string;
   updatedAt?: string;
 };
 
-function useJitteredValue(target: number, min: number, max: number, intervalMs = 1600) {
-  const [v, setV] = useState(target);
-
-  useEffect(() => {
-    setV(target);
-  }, [target]);
-
-  useEffect(() => {
-    if (target <= 0) {
-      setV(0);
-      return;
-    }
-    const id = window.setInterval(() => {
-      setV(() => {
-        const jitter = (Math.random() - 0.5) * 0.03;
-        const n = Math.max(min, Math.min(max, target + jitter));
-        return Math.round(n * 100) / 100;
-      });
-    }, intervalMs);
-    return () => window.clearInterval(id);
-  }, [target, min, max, intervalMs]);
-
-  return v;
-}
-
-function formatKw(v: number) {
-  return `${v.toFixed(2)} kW`;
-}
-
-type UnitRtProps = {
-  name: string;
-  kw: number;
-  status: "active" | "standby";
-  icon: ReactNode;
-  sparkSeed: number;
+type EnergyAnalysisData = {
+  weekDaily: number[];
+  selectedMonthDaily: number[];
+  availableMonths: string[];
 };
-
-function UnitRealtimeCard({ name, kw, status, icon, sparkSeed }: UnitRtProps) {
-  const pts = useMemo(() => {
-    const base = sparkSeed * 17;
-    const out: string[] = [];
-    for (let i = 0; i <= 10; i++) {
-      const x = (i / 10) * 100;
-      const wave = Math.sin((i + base) * 0.7) * 8 + Math.cos((i + base) * 0.4) * 5;
-      const y = 18 + wave + (kw > 0.1 ? 0 : 6);
-      out.push(`${x},${Math.min(26, Math.max(4, y))}`);
-    }
-    return out.join(" ");
-  }, [kw, sparkSeed]);
-
-  return (
-    <article className="gridos-unit-rt">
-      <div className="gridos-unit-rt-head">
-        <div className="gridos-infra-icon">{icon}</div>
-        <span
-          className={
-            status === "active" ? "gridos-status-dot" : "gridos-status-dot gridos-status-dot--standby"
-          }
-          title={status === "active" ? "Active" : "Standby"}
-        />
-      </div>
-      <p className="gridos-unit-rt-name">{name}</p>
-      <p className="gridos-unit-rt-kw">{formatKw(kw)}</p>
-      <svg className="gridos-unit-rt-spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden>
-        <polyline
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          points={pts}
-        />
-      </svg>
-    </article>
-  );
-}
 
 export default function AnalyticsPage() {
   const [telemetry, setTelemetry] = useState<TelemetryData>({
@@ -105,8 +38,14 @@ export default function AnalyticsPage() {
     energy: 0,
     voltage: 0,
     current: 0,
-    gridStatus: "ONLINE",
+    gridStatus: "OFFLINE",
   });
+  const [energyAnalysis, setEnergyAnalysis] = useState<EnergyAnalysisData>({
+    weekDaily: Array(7).fill(0),
+    selectedMonthDaily: [],
+    availableMonths: [],
+  });
+  const [selectedMonth, setSelectedMonth] = useState(() => getMonthValue(new Date()));
 
   useEffect(() => {
     let isMounted = true;
@@ -129,59 +68,61 @@ export default function AnalyticsPage() {
     };
   }, []);
 
-  const livePowerKw = telemetry.power ? Number((telemetry.power / 1000).toFixed(2)) : 0;
-  const liveEnergyKwh = telemetry.energy ? Number(Number(telemetry.energy).toFixed(2)) : 250;
+  useEffect(() => {
+    let isMounted = true;
+    const fetchEnergyAnalysis = async () => {
+      try {
+        const data = await apiRequest<EnergyAnalysisData>(
+          `/live-data/energy-analysis?month=${encodeURIComponent(selectedMonth)}`
+        );
+        if (isMounted && data) {
+          const availableMonths = data.availableMonths ?? [];
+          setEnergyAnalysis({
+            weekDaily: data.weekDaily ?? Array(7).fill(0),
+            selectedMonthDaily: data.selectedMonthDaily ?? [],
+            availableMonths,
+          });
+          const currentMonth = getMonthValue(new Date());
+          if (selectedMonth === currentMonth && availableMonths.length > 0 && !availableMonths.includes(selectedMonth)) {
+            setSelectedMonth(availableMonths[0]);
+          }
+        }
+      } catch {
+        /* ignore polling errors */
+      }
+    };
 
-  // Dynamic weekly consumption based on current energy
-  const weeklyKwh = useMemo(() => {
-    const total = liveEnergyKwh > 0 ? liveEnergyKwh : 250;
-    return WEEKLY_WEIGHTS.map((weight) => Math.round(total * weight * 10) / 10);
-  }, [liveEnergyKwh]);
+    void fetchEnergyAnalysis();
+    const energyInterval = setInterval(fetchEnergyAnalysis, 30000);
+    return () => {
+      isMounted = false;
+      clearInterval(energyInterval);
+    };
+  }, [selectedMonth]);
 
-  const weeklyTotal = useMemo(() => weeklyKwh.reduce((a, b) => a + b, 0), [weeklyKwh]);
-
-  // Dynamic monthly consumption: historical months + current month (September)
-  const monthlyKwh = useMemo(() => {
-    const currentMonthKwh = liveEnergyKwh > 0 ? Math.round(liveEnergyKwh) : 250;
-    // Current month is Sep (index 8). Future months (Oct, Nov, Dec) are 0
-    return [...HISTORICAL_MONTHS, currentMonthKwh, 0, 0, 0];
-  }, [liveEnergyKwh]);
-
-  const monthlyTotal = useMemo(() => monthlyKwh.reduce((a, b) => a + b, 0), [monthlyKwh]);
-
-  // Micro-jittered subunit loads synchronized with live meter load
-  const liveAggregate = useJitteredValue(
-    livePowerKw,
-    Math.max(0, livePowerKw - 0.2),
-    livePowerKw + 0.2,
-    1400
+  const isOnline = Boolean(
+    telemetry.gridStatus !== "OFFLINE" && telemetry.updatedAt &&
+    Date.now() - new Date(telemetry.updatedAt).getTime() < 10000
   );
+  const livePowerKw = isOnline ? Number((Number(telemetry.power || 0) / 1000).toFixed(2)) : 0;
+  const weeklyKwh = energyAnalysis.weekDaily;
+  const weeklyTotal = weeklyKwh.reduce((sum, value) => sum + value, 0);
+  const selectedMonthKwh = energyAnalysis.selectedMonthDaily;
+  const selectedMonthTotal = selectedMonthKwh.reduce((sum, value) => sum + value, 0);
+  const selectedMonthLabels = selectedMonthKwh.map((_, index) => String(index + 1));
+  const currentDate = new Date();
+  const recentMonths = Array.from({ length: 12 }, (_, offset) =>
+    getMonthValue(new Date(currentDate.getFullYear(), currentDate.getMonth() - offset, 1))
+  );
+  const monthOptions = Array.from(new Set([...recentMonths, ...energyAnalysis.availableMonths, selectedMonth])).sort().reverse();
   const fillPortion = livePowerKw > 0 ? Math.min(1, livePowerKw / 4.0) : 0;
-
-  const hvacTarget = livePowerKw > 0 ? Number((livePowerKw * 0.45).toFixed(2)) : 0;
-  const storageTarget = livePowerKw > 0 ? Number((livePowerKw * 0.30).toFixed(2)) : 0;
-  const evTarget = livePowerKw > 0 ? Number((livePowerKw * 0.25).toFixed(2)) : 0;
-
-  const hvacKw = useJitteredValue(hvacTarget, Math.max(0, hvacTarget - 0.05), hvacTarget + 0.05, 1500);
-  const storageKw = useJitteredValue(
-    storageTarget,
-    Math.max(0, storageTarget - 0.03),
-    storageTarget + 0.03,
-    1700
-  );
-  const evKw = useJitteredValue(evTarget, Math.max(0, evTarget - 0.03), evTarget + 0.03, 2000);
-
-  const weeklyTrendPct = weekHalfOverHalfChange(weeklyKwh);
-  const trendWeekly =
-    weeklyTrendPct >= 0 ? `+${weeklyTrendPct.toFixed(1)}%` : `${weeklyTrendPct.toFixed(1)}%`;
 
   return (
     <>
       <header className="gridos-page-head">
         <h1 className="gridos-page-title">Analytics</h1>
         <p className="gridos-page-desc">
-          Energy usage by week and month (kWh), live draw per unit, and aggregate real-time load from
-          your node.
+          Stored daily and monthly energy consumption and current load from your ESP32 meter.
         </p>
       </header>
 
@@ -196,9 +137,9 @@ export default function AnalyticsPage() {
               </p>
             </div>
             <span
-              className={`gridos-usage-delta${weeklyTrendPct < 0 ? " gridos-usage-delta--down" : ""}`}
+              className="gridos-usage-delta"
             >
-              {trendWeekly} vs last week
+              Current week
             </span>
           </div>
           <div className="gridos-chart-wrap">
@@ -209,68 +150,62 @@ export default function AnalyticsPage() {
         <Card className="gridos-usage-card">
           <div className="gridos-usage-head">
             <div>
-              <p className="gridos-usage-label">This year (monthly)</p>
+              <p className="gridos-usage-label">Daily energy consumption</p>
               <p className="gridos-usage-total">
-                {(monthlyTotal / 1000).toFixed(2)}
-                <span>MWh</span>
+                {selectedMonthTotal.toFixed(1)}
+                <span>kWh</span>
               </p>
             </div>
-            <span className="gridos-usage-delta">+3.4% vs prior year</span>
+            <select
+              className="gridos-usage-delta"
+              aria-label="Select month and year"
+              value={selectedMonth}
+              onChange={(event) => setSelectedMonth(event.target.value)}
+              style={{ border: 0, cursor: "pointer" }}
+            >
+              {monthOptions.map((month) => (
+                <option key={month} value={month}>{formatMonthLabel(month)}</option>
+              ))}
+            </select>
           </div>
           <div className="gridos-chart-wrap">
-            <MonthlyLineChart labels={MONTHLY_LABELS} valuesKwh={monthlyKwh} />
+            <MonthlyLineChart labels={selectedMonthLabels} valuesKwh={selectedMonthKwh} />
           </div>
         </Card>
       </div>
 
       <section style={{ marginTop: 8 }}>
-        <h3 className="gridos-section-title">Real-time unit monitoring</h3>
+        <h3 className="gridos-section-title">Real-time meter monitoring</h3>
         <div className="gridos-analytics-mid">
           <Card className="gridos-rt-card">
             <MetricGauge
               label="Live load"
-              value={liveAggregate.toFixed(2)}
+              value={isOnline ? livePowerKw.toFixed(2) : "—"}
               unit="kW"
-              trend={livePowerKw > 0 ? "Streaming" : "Standby"}
+              trend={isOnline ? "Streaming" : "No live data"}
               fillPortion={fillPortion}
             />
             <p className="gridos-rt-caption">
-              Combined power across registered units. Values refresh from your meter stream.
+              Real-time load reported by the ESP32 PZEM meter.
             </p>
           </Card>
-          <div className="gridos-units-analytics">
-            <UnitRealtimeCard
-              name="Main HVAC unit"
-              kw={hvacKw}
-              status={hvacKw > 0.05 ? "active" : "standby"}
-              icon={<IconFan />}
-              sparkSeed={1}
-            />
-            <UnitRealtimeCard
-              name="Sub-Zero storage"
-              kw={storageKw}
-              status={storageKw > 0.05 ? "active" : "standby"}
-              icon={<IconBattery />}
-              sparkSeed={2}
-            />
-            <UnitRealtimeCard
-              name="Tesla Wall Connector"
-              kw={evKw}
-              status={evKw > 0.05 ? "active" : "standby"}
-              icon={<IconEv />}
-              sparkSeed={3}
-            />
-          </div>
+          <Card className="gridos-rt-card">
+            <div className="ac-summary-list">
+              {[
+                { label: "Voltage", value: isOnline ? `${Number(telemetry.voltage).toFixed(2)} V` : "—" },
+                { label: "Current", value: isOnline ? `${Number(telemetry.current).toFixed(3)} A` : "—" },
+                { label: "Frequency", value: isOnline ? `${Number(telemetry.frequency).toFixed(2)} Hz` : "—" },
+                { label: "Power factor", value: isOnline ? Number(telemetry.powerFactor).toFixed(2) : "—" },
+              ].map((reading) => (
+                <div key={reading.label} className="ac-summary-item">
+                  <span className="ac-summary-label">{reading.label}</span>
+                  <span className="ac-summary-value">{reading.value}</span>
+                </div>
+              ))}
+            </div>
+          </Card>
         </div>
       </section>
     </>
   );
-}
-
-function weekHalfOverHalfChange(values: number[]) {
-  const half = Math.floor(values.length / 2);
-  if (half < 1 || values.length - half < 1) return 0;
-  const a = values.slice(0, half).reduce((s, x) => s + x, 0) / half;
-  const b = values.slice(half).reduce((s, x) => s + x, 0) / (values.length - half);
-  return ((b - a) / Math.max(a, 1)) * 100;
 }

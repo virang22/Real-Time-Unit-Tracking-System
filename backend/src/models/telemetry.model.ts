@@ -23,10 +23,10 @@ const telemetrySchema = new Schema<TelemetryDocument>(
         current: { type: Number, required: true },
         power: { type: Number, required: true },
         energy: { type: Number, required: true },
-        frequency: { type: Number, default: 50.0 },
-        powerFactor: { type: Number, default: 1.0 },
+        frequency: { type: Number, required: true },
+        powerFactor: { type: Number, required: true },
         costPerHour: { type: Number, default: 0 },
-        timestamp: { type: Date, default: Date.now, index: true },
+        timestamp: { type: Date, required: true, default: Date.now, index: true },
     },
     { timestamps: false }
 );

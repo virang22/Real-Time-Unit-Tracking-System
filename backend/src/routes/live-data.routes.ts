@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { Router, Request, Response } from 'express';
 import alertDetectionService from '../services/alert-detection.service';
+import Telemetry from '../models/telemetry.model';
 import Logger from '../utils/logger.service';
 
 const liveDataRouter = Router();
@@ -16,10 +17,6 @@ type EnergyState = {
 // Keeps the dashboard total continuous across server restarts and ESP32 reconnects.
 const energyStatePath = path.resolve(process.cwd(), 'logs', 'energy-state.json');
 const energyByDevice = new Map<string, EnergyState>();
-const demoModeEnabled = process.env.DEMO_MODE !== 'false';
-let lastRealTelemetryAt = 0;
-let hasFirmwareDemoPackets = false;
-let lastFirmwareDemoAt = 0;
 
 // 1. Read persistent energy state first before initializing in-memory variables
 try {
@@ -32,9 +29,9 @@ try {
 }
 
 // 2. Initialize demoEnergy from the loaded state (resumes counting from last saved value)
-const savedGridEnergy = energyByDevice.get('ESP32-GRID-NODE-01')?.lastReportedEnergy ?? 237.4;
-let demoEnergy = Number(savedGridEnergy.toFixed(2));
-Logger.info(`[Energy] Starting/resuming total energy at: ${demoEnergy} kWh`);
+const savedGridEnergy = energyByDevice.get('ESP32-GRID-NODE-01')?.lastReportedEnergy ?? 0;
+let totalEnergy = Number(savedGridEnergy.toFixed(4));
+Logger.info(`[Energy] Starting/resuming total energy at: ${totalEnergy} kWh`);
 
 function persistEnergyState(): void {
     try {
@@ -52,7 +49,7 @@ let latestTelemetry = {
     voltage: 0,
     current: 0,
     power: 0,
-    energy: demoEnergy,
+    energy: totalEnergy,
     frequency: 0,
     powerFactor: 0,
     costPerHour: 0,
@@ -61,33 +58,6 @@ let latestTelemetry = {
     relayState: 'ON',
     updatedAt: new Date(0).toISOString(), // epoch = device starts OFFLINE
 };
-
-function updateDemoTelemetry(force = false): void {
-    const phase = Date.now() / 8000;
-    const voltage = 228 + Math.sin(phase) * 3.5;
-    const current = 1.1 + (Math.sin(phase * 1.5) + 1) * 0.15;
-    const power = voltage * current * 0.96;
-    demoEnergy = Number((demoEnergy + 0.01).toFixed(2));
-
-    latestTelemetry = {
-        ...latestTelemetry,
-        deviceId: 'ESP32-GRID-NODE-01',
-        voltage: Number(voltage.toFixed(1)),
-        current: Number(current.toFixed(2)),
-        power: Number(power.toFixed(1)),
-        energy: demoEnergy,
-        frequency: Number((50 + (Math.sin(phase * 2) * 0.15)).toFixed(1)),
-        powerFactor: 0.96,
-        updatedAt: new Date().toISOString(),
-    };
-
-    energyByDevice.set('ESP32-GRID-NODE-01', {
-        offset: 0,
-        lastRawEnergy: demoEnergy,
-        lastReportedEnergy: demoEnergy,
-    });
-    persistEnergyState();
-}
 
 // GET /api/live-data - Frontend fetches live status
 liveDataRouter.get('/', (_req: Request, res: Response) => {
@@ -116,58 +86,159 @@ liveDataRouter.get('/', (_req: Request, res: Response) => {
     });
 });
 
+liveDataRouter.get('/energy-analysis', async (_req: Request, res: Response) => {
+    try {
+        const deviceId = latestTelemetry.deviceId;
+        const latest = await Telemetry.findOne({ deviceId })
+            .sort({ timestamp: -1 })
+            .select('energy timestamp');
+
+        const now = new Date();
+        const requestedMonth = typeof _req.query.month === 'string' ? _req.query.month : undefined;
+        const monthMatch = requestedMonth ? /^(\d{4})-(0[1-9]|1[0-2])$/.exec(requestedMonth) : null;
+        if (requestedMonth && !monthMatch) {
+            return res.status(400).json({ message: 'Month must use YYYY-MM format' });
+        }
+        const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const weekStart = new Date(todayStart);
+        weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
+        const currentYearStart = new Date(now.getFullYear(), 0, 1);
+
+        const consumptionBetween = async (start: Date, end: Date): Promise<number> => {
+            const periodLatest = await Telemetry.findOne({ deviceId, timestamp: { $gte: start, $lt: end } })
+                .sort({ timestamp: -1 })
+                .select('energy');
+            if (!periodLatest) return 0;
+
+            const baseline = await Telemetry.findOne({ deviceId, timestamp: { $lte: start } })
+                .sort({ timestamp: -1 })
+                .select('energy');
+            const firstInPeriod = baseline ?? await Telemetry.findOne({ deviceId, timestamp: { $gte: start, $lt: end } })
+                .sort({ timestamp: 1 })
+                .select('energy');
+
+            if (!firstInPeriod) return 0;
+            return Number(Math.max(0, periodLatest.energy - firstInPeriod.energy).toFixed(4));
+        };
+
+        const weekDays = Array.from({ length: 7 }, (_, index) => {
+            const start = new Date(weekStart);
+            start.setDate(start.getDate() + index);
+            const end = new Date(start);
+            end.setDate(end.getDate() + 1);
+            return { start, end };
+        });
+        const yearMonths = Array.from({ length: 12 }, (_, index) => ({
+            start: new Date(currentYearStart.getFullYear(), index, 1),
+            end: new Date(currentYearStart.getFullYear(), index + 1, 1),
+        }));
+        const [weekDaily, yearMonthly] = await Promise.all([
+            Promise.all(weekDays.map(({ start, end }) => consumptionBetween(start, end))),
+            Promise.all(yearMonths.map(({ start, end }) => consumptionBetween(start, end))),
+        ]);
+        let selectedMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+        let selectedMonthDaily: number[] = [];
+        let availableMonths: string[] = [];
+        if (monthMatch) {
+            const year = Number(monthMatch[1]);
+            const month = Number(monthMatch[2]);
+            selectedMonth = requestedMonth!;
+            const daysInMonth = new Date(year, month, 0).getDate();
+            selectedMonthDaily = await Promise.all(Array.from({ length: daysInMonth }, (_, index) => {
+                const start = new Date(year, month - 1, index + 1);
+                const end = new Date(year, month - 1, index + 2);
+                return consumptionBetween(start, end);
+            }));
+            const storedMonths = await Telemetry.aggregate([
+                { $match: { deviceId } },
+                { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$timestamp' } } } },
+                { $sort: { _id: -1 } },
+                { $limit: 36 },
+            ]);
+            availableMonths = storedMonths.map(({ _id }) => String(_id));
+        }
+        const todayIndex = (now.getDay() + 6) % 7;
+        const thisWeek = Number(weekDaily.reduce((sum, value) => sum + value, 0).toFixed(4));
+
+        res.json({
+            today: weekDaily[todayIndex],
+            thisWeek,
+            thisMonth: yearMonthly[now.getMonth()],
+            total: latest ? Number(latest.energy.toFixed(4)) : 0,
+            weekDaily,
+            yearMonthly,
+            selectedMonth,
+            selectedMonthDaily,
+            availableMonths,
+        });
+    } catch (error) {
+        Logger.error('Error fetching energy analysis:', error);
+        res.status(500).json({ message: 'Failed to fetch energy analysis' });
+    }
+});
+
+liveDataRouter.get('/history', async (req: Request, res: Response) => {
+    try {
+        const requestedLimit = Number(req.query.limit);
+        const limit = Number.isInteger(requestedLimit) && requestedLimit > 0
+            ? Math.min(requestedLimit, 1000)
+            : 200;
+        const deviceId = typeof req.query.deviceId === 'string' && req.query.deviceId.trim()
+            ? req.query.deviceId.trim()
+            : latestTelemetry.deviceId;
+        const query: Record<string, unknown> = { deviceId };
+
+        if (typeof req.query.from === 'string' || typeof req.query.to === 'string') {
+            const timestamp: Record<string, Date> = {};
+            if (typeof req.query.from === 'string') {
+                const from = new Date(req.query.from);
+                if (!Number.isFinite(from.getTime())) return res.status(400).json({ message: 'Invalid from timestamp' });
+                timestamp.$gte = from;
+            }
+            if (typeof req.query.to === 'string') {
+                const to = new Date(req.query.to);
+                if (!Number.isFinite(to.getTime())) return res.status(400).json({ message: 'Invalid to timestamp' });
+                timestamp.$lte = to;
+            }
+            query.timestamp = timestamp;
+        }
+
+        const readings = await Telemetry.find(query)
+            .sort({ timestamp: -1 })
+            .limit(limit)
+            .select('deviceId timestamp voltage current power energy frequency powerFactor');
+        res.json({ data: readings.reverse(), count: readings.length });
+    } catch (error) {
+        Logger.error('Error fetching telemetry history:', error);
+        res.status(500).json({ message: 'Failed to fetch telemetry history' });
+    }
+});
+
 // POST /api/live-data - ESP32 posts telemetry
 liveDataRouter.post('/', async (req: Request, res: Response) => {
     try {
-      const {
-        voltage = 0,
-        current = 0,
-        power = 0,
-        energy = 0,
-        frequency = 50.0,
-        powerFactor = 1.0,
-        deviceId = 'ESP32-NODE-01',
-                userId = 'admin',
-            } = req.body;
+      const { voltage, current, power, energy, frequency, powerFactor, deviceId, userId = 'admin' } = req.body ?? {};
+      const numericFields = { voltage, current, power, energy, frequency, powerFactor };
+      const hasInvalidNumber = Object.values(numericFields).some((value) =>
+          typeof value !== 'number' || !Number.isFinite(value)
+      );
 
-    const normalizedDeviceId = String(deviceId);
-    const isFixedDemoPacket = normalizedDeviceId === 'ESP32-GRID-NODE-01'
-        && Number(voltage) === 230
-        && Number(current) === 0.85
-        && Number(power) === 195.5;
+      if (typeof deviceId !== 'string' || !deviceId.trim() || hasInvalidNumber) {
+          return res.status(400).json({ status: 'ERROR', message: 'Telemetry requires deviceId and finite numeric readings' });
+      }
+      if (voltage < 0 || current < 0 || power < 0 || energy < 0 || frequency < 0 || powerFactor < 0 || powerFactor > 1) {
+          return res.status(400).json({ status: 'ERROR', message: 'Telemetry readings are outside valid ranges' });
+      }
+      if (voltage === 0 && current === 0 && power === 0 && frequency === 0 && powerFactor === 0) {
+          return res.status(200).json({
+              status: 'WAITING',
+              message: 'Waiting for real sensor data',
+              relayControl: latestTelemetry.relayState,
+              timestamp: new Date().toISOString(),
+          });
+      }
 
-    const isZeroTelemetry = Number(voltage) === 0 && Number(current) === 0 && Number(power) === 0
-        && Number(frequency) === 0 && Number(powerFactor) === 0;
-
-    // Only fall back to demo if this looks like a fixed demo packet (not real PZEM data)
-    // Real PZEM data always has non-zero voltage, frequency and power factor
-    if (isFixedDemoPacket) {
-        hasFirmwareDemoPackets = true;
-        lastFirmwareDemoAt = Date.now();
-        updateDemoTelemetry(true);
-        lastRealTelemetryAt = Date.now();
-        persistEnergyState();
-        return res.status(200).json({
-            status: 'SUCCESS',
-            message: 'Fixed demo packet received',
-            relayControl: latestTelemetry.relayState,
-            timestamp: latestTelemetry.updatedAt,
-        });
-    }
-
-    // If ALL fields are zero, the ESP32 has no sensor attached – still accept but do not
-    // update updatedAt so the device stays OFFLINE until real readings arrive
-    if (isZeroTelemetry) {
-        Logger.info('[ESP32] Zero telemetry received – waiting for real sensor data');
-        return res.status(200).json({
-            status: 'WAITING',
-            message: 'Waiting for real sensor data',
-            relayControl: latestTelemetry.relayState,
-            timestamp: new Date().toISOString(),
-        });
-    }
-
-    lastRealTelemetryAt = Date.now();
+    const normalizedDeviceId = deviceId.trim();
     const rawEnergy = Number(energy);
     const previousEnergy = energyByDevice.get(normalizedDeviceId);
     let offset = previousEnergy?.offset ?? 0;
@@ -205,26 +276,6 @@ liveDataRouter.post('/', async (req: Request, res: Response) => {
 
     reportedEnergy = Number(reportedEnergy.toFixed(4));
 
-    energyByDevice.set(normalizedDeviceId, {
-        offset,
-        lastRawEnergy: rawEnergy,
-        lastReportedEnergy: reportedEnergy,
-        lastSampleTime: Date.now(),
-    });
-    persistEnergyState();
-
-    latestTelemetry = {
-        ...latestTelemetry,
-        deviceId: normalizedDeviceId,
-        voltage: Number(voltage),
-        current: Number(current),
-        power: Number(power),
-        energy: reportedEnergy,
-        frequency: Number(frequency),
-        powerFactor: Number(powerFactor),
-        updatedAt: new Date().toISOString(),
-    };
-
     Logger.info(`[ESP32 Ingest] V: ${voltage}V | I: ${current}A | P: ${power}W | Raw E: ${rawEnergy}kWh | Total E: ${reportedEnergy.toFixed(4)}kWh | Dev: ${normalizedDeviceId}`);
 
     await alertDetectionService.processTelemetry(userId, normalizedDeviceId, {
@@ -236,6 +287,27 @@ liveDataRouter.post('/', async (req: Request, res: Response) => {
         powerFactor: Number(powerFactor),
         costPerHour: Number(req.body.costPerHour || 0),
     });
+
+    energyByDevice.set(normalizedDeviceId, {
+        offset,
+        lastRawEnergy: rawEnergy,
+        lastReportedEnergy: reportedEnergy,
+        lastSampleTime: Date.now(),
+    });
+    persistEnergyState();
+
+    totalEnergy = reportedEnergy;
+    latestTelemetry = {
+        ...latestTelemetry,
+        deviceId: normalizedDeviceId,
+        voltage: Number(voltage),
+        current: Number(current),
+        power: Number(power),
+        energy: totalEnergy,
+        frequency: Number(frequency),
+        powerFactor: Number(powerFactor),
+        updatedAt: new Date().toISOString(),
+    };
 
     res.status(200).json({
         status: 'SUCCESS',

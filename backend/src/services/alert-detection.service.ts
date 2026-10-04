@@ -38,7 +38,6 @@ class AlertDetectionService {
             costPerHour: number;
         }
     ) {
-        try {
             // Resolve a valid ObjectId for userId
             let resolvedUserId: Types.ObjectId;
             if (userId && Types.ObjectId.isValid(userId)) {
@@ -84,14 +83,14 @@ class AlertDetectionService {
             });
             await telemetry.save();
 
-            // 3. Check for anomalies
+            // Persist first; failures must reach the ingest route so it cannot acknowledge unstored data.
             const userIdStr = resolvedUserId.toString();
-            await this.detectAnomalies(userIdStr, deviceId, data);
-            await this.detectEnergyLimit(userIdStr, deviceId, data.energy);
-
-        } catch (error) {
-            Logger.error('Error processing telemetry:', error);
-        }
+            try {
+                await this.detectAnomalies(userIdStr, deviceId, data);
+                await this.detectEnergyLimit(userIdStr, deviceId, data.energy);
+            } catch (error) {
+                Logger.error('Error running telemetry alerts:', error);
+            }
     }
 
     private async detectEnergyLimit(userId: string, deviceId: string, energy: number) {

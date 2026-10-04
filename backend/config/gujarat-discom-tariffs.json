@@ -1,0 +1,56 @@
+{
+  "scheduleName": "GERC Tariff Schedule of Four State Owned DISCOMs",
+  "effectiveFrom": "2026-04-01",
+  "sourceUrl": "https://gercin.org/tariff_schedule",
+  "discoms": ["DGVCL", "MGVCL", "PGVCL", "UGVCL"],
+  "tariffs": {
+    "RGP": {
+      "label": "RGP",
+      "fixedChargesByLoadKw": [
+        { "upToKw": 2, "amountPerMonth": 15 },
+        { "upToKw": 4, "amountPerMonth": 25 },
+        { "upToKw": 6, "amountPerMonth": 45 },
+        { "upToKw": null, "amountPerMonth": 70 }
+      ],
+      "bplFixedChargePerMonth": 5,
+      "energySlabs": [
+        { "units": 50, "ratePaisaPerKwh": 305 },
+        { "units": 50, "ratePaisaPerKwh": 350 },
+        { "units": 150, "ratePaisaPerKwh": 415 },
+        { "units": null, "ratePaisaPerKwh": 520 }
+      ],
+      "bplFirstSlab": { "units": 50, "ratePaisaPerKwh": 150 }
+    },
+    "RGP_RURAL": {
+      "label": "RGP Rural",
+      "fixedChargesByLoadKw": [
+        { "upToKw": 2, "amountPerMonth": 15 },
+        { "upToKw": 4, "amountPerMonth": 25 },
+        { "upToKw": 6, "amountPerMonth": 45 },
+        { "upToKw": null, "amountPerMonth": 70 }
+      ],
+      "bplFixedChargePerMonth": 5,
+      "energySlabs": [
+        { "units": 50, "ratePaisaPerKwh": 265 },
+        { "units": 50, "ratePaisaPerKwh": 310 },
+        { "units": 150, "ratePaisaPerKwh": 375 },
+        { "units": null, "ratePaisaPerKwh": 490 }
+      ],
+      "bplFirstSlab": { "units": 50, "ratePaisaPerKwh": 150 }
+    }
+  },
+  "utilityCharges": {
+    "fppasPerKwh": null,
+    "fppasEffectiveFrom": null,
+    "fppasSourceUrl": null,
+    "electricityDutyPercentByProfile": {
+      "RGP_NON_BPL": null,
+      "RGP_BPL": null,
+      "RGP_RURAL_NON_BPL": null,
+      "RGP_RURAL_BPL": null
+    },
+    "electricityDutyBasis": null,
+    "electricityDutyEffectiveFrom": null,
+    "electricityDutySourceUrl": null
+  }
+}
