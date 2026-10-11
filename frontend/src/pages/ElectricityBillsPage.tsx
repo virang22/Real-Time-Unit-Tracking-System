@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import PaymentGatewayModal, { type PaymentSuccessData } from "../components/wallet/PaymentGatewayModal";
-import { getToken } from "../utils/token";
+import { getToken, clearToken } from "../utils/token";
 import "../styles/electricity-bills.css";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:11020/api";
@@ -9,6 +9,7 @@ type BillStatus = "PENDING" | "PAID" | "OVERDUE";
 
 type ElectricityBill = {
   _id: string;
+  userId?: string;
   deviceId: string;
   period: string;
   periodType?: string;
@@ -40,6 +41,33 @@ type ElectricityBill = {
   transactionId?: string;
   paymentMethod?: string;
   paidAt?: string;
+  createdAt?: string;
+};
+
+type EstimationData = {
+  currentConsumption: {
+    previousReading: number;
+    currentReading: number;
+    consumedUnits: number;
+    periodLabel: string;
+  };
+  estimatedBill: {
+    consumptionSoFar: number;
+    daysElapsed: number;
+    averageDaily: number;
+    estimatedMonthEndUnits: number;
+    estimatedMonthEndBill: number;
+    breakdown: { label: string; amount: number }[];
+  };
+  previousComparison: {
+    previousUnits: number;
+    currentUnits: number;
+    unitDifference: number;
+    percentageChange: number;
+    previousBillAmount: number;
+    currentBillAmount: number;
+    amountDifference: number;
+  };
 };
 
 type ApiResult<T> = { success: boolean; data: T };
@@ -71,6 +99,12 @@ async function billRequest<T>(path: string, options: { method?: "GET" | "POST" |
     },
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
   });
+  if (response.status === 401) {
+    clearToken();
+    window.location.href = "/login";
+    throw new Error("Session expired. Please log in again.");
+  }
+
   const result = await response.json().catch(() => null) as (T & { error?: string; message?: string }) | null;
   if (!response.ok || !result) {
     throw new Error(result?.error ?? result?.message ?? `Bill request failed (${response.status})`);
@@ -124,6 +158,8 @@ async function downloadBillPdf(bill: ElectricityBill) {
   y += 6;
   pdf.text(`DISCOM: ${bill.discom ?? "—"}    Meter: ${bill.deviceId}`, 14, y);
   y += 6;
+  pdf.text(`Consumer ID: ${bill.userId ?? "—"}`, 14, y);
+  y += 6;
   pdf.text(`Tariff: ${bill.tariffCategory ?? "—"}${bill.isBpl ? " · BPL" : ""}    Connected load: ${bill.connectedLoadKw ?? "—"} kW`, 14, y);
   y += 6;
   pdf.text(`Status: ${bill.status}    Due date: ${formatDate(bill.dueDate)}`, 14, y);
@@ -131,8 +167,9 @@ async function downloadBillPdf(bill: ElectricityBill) {
 
   pdf.setFont("helvetica", "bold");
   pdf.text("Meter readings", 14, y);
-  y += 7;
   pdf.setFont("helvetica", "normal");
+  pdf.text(`Bill no: ${bill._id}`, pageWidth - 14, y, { align: "right" });
+  y += 7;
   pdf.text(`Opening: ${bill.previousReading.toFixed(4)} kWh (${formatDateTime(bill.previousReadingAt)})`, 14, y);
   y += 6;
   pdf.text(`Closing: ${bill.currentReading.toFixed(4)} kWh (${formatDateTime(bill.currentReadingAt)})`, 14, y);
@@ -160,6 +197,8 @@ async function downloadBillPdf(bill: ElectricityBill) {
   y += 10;
   pdf.setFont("helvetica", "normal");
   pdf.setFontSize(8);
+  pdf.text(`Generated on: ${formatDateTime(new Date().toISOString())}`, 14, y);
+  y += 5;
   if (bill.tariffScheduleName) pdf.text(`Tariff source: ${bill.tariffScheduleName} (effective ${formatDate(bill.tariffEffectiveFrom ?? "")})`, 14, y);
 
   pdf.save(`electricity-bill-${bill._id}.pdf`);
@@ -184,6 +223,8 @@ export default function ElectricityBillsPage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [paymentBill, setPaymentBill] = useState<ElectricityBill | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
+  const [estimationData, setEstimationData] = useState<EstimationData | null>(null);
+  const [isEstimating, setIsEstimating] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -214,6 +255,31 @@ export default function ElectricityBillsPage() {
       isMounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!deviceId || !discom || !tariffCategory || !connectedLoadKw || Number(connectedLoadKw) <= 0) return;
+    let isMounted = true;
+    const fetchEstimation = async () => {
+      setIsEstimating(true);
+      try {
+        const query = new URLSearchParams({
+          deviceId,
+          discom,
+          tariffCategory,
+          isBpl: String(isBpl),
+          connectedLoadKw: String(connectedLoadKw),
+        }).toString();
+        const result = await billRequest<ApiResult<EstimationData>>(`/bills/current-estimation?${query}`);
+        if (isMounted) setEstimationData(result.data);
+      } catch {
+        if (isMounted) setEstimationData(null);
+      } finally {
+        if (isMounted) setIsEstimating(false);
+      }
+    };
+    void fetchEstimation();
+    return () => { isMounted = false; };
+  }, [deviceId, discom, tariffCategory, isBpl, connectedLoadKw]);
 
   const activeBill = bills.find((bill) => bill._id === activeBillId) ?? null;
 
@@ -260,6 +326,47 @@ export default function ElectricityBillsPage() {
         <h1 className="gridos-page-title">Electricity Bills</h1>
         <p className="gridos-page-desc">Generate and review bills from your stored meter readings.</p>
       </header>
+
+      {isEstimating ? (
+        <div className="ebill-empty">Loading estimation...</div>
+      ) : estimationData && (
+        <div className="ebill-dashboard-widgets">
+          <section className="ebill-widget">
+            <h3>📊 Current Consumption</h3>
+            <p><strong>Period:</strong> <span>{estimationData.currentConsumption.periodLabel}</span></p>
+            <p><strong>Opening:</strong> <span>{estimationData.currentConsumption.previousReading.toFixed(4)} kWh</span></p>
+            <p><strong>Current:</strong> <span>{estimationData.currentConsumption.currentReading.toFixed(4)} kWh</span></p>
+            <p><strong>Consumed:</strong> <span>{estimationData.currentConsumption.consumedUnits.toFixed(4)} kWh</span></p>
+          </section>
+
+          <section className="ebill-widget">
+            <h3>🔮 Estimated Current-Month Bill</h3>
+            <p><strong>Elapsed:</strong> <span>{estimationData.estimatedBill.daysElapsed.toFixed(1)} days</span></p>
+            <p><strong>Avg Daily:</strong> <span>{estimationData.estimatedBill.averageDaily.toFixed(4)} kWh/day</span></p>
+            <p><strong>Est. Month-End Units:</strong> <span>{estimationData.estimatedBill.estimatedMonthEndUnits.toFixed(4)} kWh</span></p>
+            <p><strong>Est. Month-End Bill:</strong> <span>{formatMoney(estimationData.estimatedBill.estimatedMonthEndBill)}</span></p>
+            <div className="ebill-mini-breakdown">
+              {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+              {estimationData.estimatedBill.breakdown.map((b: any) => (
+                <div key={b.label}><span>{b.label}:</span> <span>{formatMoney(b.amount)}</span></div>
+              ))}
+            </div>
+          </section>
+
+          <section className="ebill-widget">
+            <h3>📈 Previous Bill Comparison</h3>
+            <p><strong>Prev Units:</strong> <span>{estimationData.previousComparison.previousUnits.toFixed(4)} kWh</span></p>
+            <p><strong>Est Current Units:</strong> <span>{estimationData.previousComparison.currentUnits.toFixed(4)} kWh</span></p>
+            <p>
+              <strong>Unit Diff:</strong> <span>{estimationData.previousComparison.unitDifference > 0 ? '+' : ''}{estimationData.previousComparison.unitDifference.toFixed(4)} kWh
+              ({estimationData.previousComparison.percentageChange > 0 ? '+' : ''}{estimationData.previousComparison.percentageChange.toFixed(1)}%)</span>
+            </p>
+            <p><strong>Prev Bill:</strong> <span>{formatMoney(estimationData.previousComparison.previousBillAmount)}</span></p>
+            <p><strong>Est Current Bill:</strong> <span>{formatMoney(estimationData.previousComparison.currentBillAmount)}</span></p>
+            <p><strong>Amount Diff:</strong> <span>{estimationData.previousComparison.amountDifference > 0 ? '+' : ''}{formatMoney(estimationData.previousComparison.amountDifference)}</span></p>
+          </section>
+        </div>
+      )}
 
       {errorMessage && <div className="ebill-error" role="alert">{errorMessage}</div>}
 
@@ -310,7 +417,7 @@ export default function ElectricityBillsPage() {
           </label>
           <label className="ebill-field">
             <span>Connected load (kW)</span>
-            <input required min="0.1" step="0.1" type="number" inputMode="decimal" value={connectedLoadKw} onChange={(event) => setConnectedLoadKw(event.target.value)} placeholder="Enter contracted load" />
+            <input required min="0.1" max="15" step="0.1" type="number" inputMode="decimal" value={connectedLoadKw} onChange={(event) => setConnectedLoadKw(event.target.value)} placeholder="Enter contracted load" />
           </label>
           <label className="ebill-field ebill-checkbox-field">
             <span>BPL household</span>

@@ -40,17 +40,17 @@
     }
   },
   "utilityCharges": {
-    "fppasPerKwh": null,
-    "fppasEffectiveFrom": null,
-    "fppasSourceUrl": null,
+    "fppasPerKwh": 2.45,
+    "fppasEffectiveFrom": "2026-04-01",
+    "fppasSourceUrl": "https://gercin.org/tariff_schedule",
     "electricityDutyPercentByProfile": {
-      "RGP_NON_BPL": null,
-      "RGP_BPL": null,
-      "RGP_RURAL_NON_BPL": null,
-      "RGP_RURAL_BPL": null
+      "RGP_NON_BPL": 15,
+      "RGP_BPL": 15,
+      "RGP_RURAL_NON_BPL": 15,
+      "RGP_RURAL_BPL": 15
     },
-    "electricityDutyBasis": null,
-    "electricityDutyEffectiveFrom": null,
-    "electricityDutySourceUrl": null
+    "electricityDutyBasis": "ENERGY_AND_FPPAS",
+    "electricityDutyEffectiveFrom": "2026-04-01",
+    "electricityDutySourceUrl": "https://gercin.org/tariff_schedule"
   }
 }

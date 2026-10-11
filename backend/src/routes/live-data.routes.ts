@@ -11,7 +11,6 @@ type EnergyState = {
     offset: number;
     lastRawEnergy: number;
     lastReportedEnergy: number;
-    lastSampleTime?: number;
 };
 
 // Keeps the dashboard total continuous across server restarts and ESP32 reconnects.
@@ -251,33 +250,13 @@ liveDataRouter.post('/', async (req: Request, res: Response) => {
             offset = previousEnergy.lastReportedEnergy - rawEnergy;
             reportedEnergy = offset + rawEnergy;
         } else {
-            // Calculate integrated energy from real-time power (since ESP32 float precision underflows at small loads)
-            const now = Date.now();
-            const lastTime = previousEnergy.lastSampleTime || now;
-            const elapsedHours = Math.max(0, (now - lastTime) / 3600000);
-            
-            // Only integrate if elapsed time is reasonable (e.g. less than 5 mins) to avoid huge jumps if offline
-            let integratedDelta = 0;
-            if (elapsedHours > 0 && elapsedHours < 0.1) {
-                integratedDelta = (Number(power) * elapsedHours) / 1000; // Power (W) to Energy (kWh)
-            }
-            
-            const rawDelta = rawEnergy - previousEnergy.lastRawEnergy;
-            
-            // Use maximum of raw delta or calculated delta to ensure smooth updates without losing counts
-            const actualDelta = Math.max(rawDelta, integratedDelta);
-            
-            reportedEnergy = previousEnergy.lastReportedEnergy + actualDelta;
-            
-            // Adjust offset so that (offset + rawEnergy) matches reportedEnergy seamlessly
-            offset = reportedEnergy - rawEnergy;
+            reportedEnergy = offset + rawEnergy;
         }
     }
 
-    reportedEnergy = Number(reportedEnergy.toFixed(4));
-
     Logger.info(`[ESP32 Ingest] V: ${voltage}V | I: ${current}A | P: ${power}W | Raw E: ${rawEnergy}kWh | Total E: ${reportedEnergy.toFixed(4)}kWh | Dev: ${normalizedDeviceId}`);
 
+    const receivedAt = new Date();
     await alertDetectionService.processTelemetry(userId, normalizedDeviceId, {
         voltage: Number(voltage),
         current: Number(current),
@@ -286,13 +265,13 @@ liveDataRouter.post('/', async (req: Request, res: Response) => {
         frequency: Number(frequency),
         powerFactor: Number(powerFactor),
         costPerHour: Number(req.body.costPerHour || 0),
+        timestamp: receivedAt,
     });
 
     energyByDevice.set(normalizedDeviceId, {
         offset,
         lastRawEnergy: rawEnergy,
         lastReportedEnergy: reportedEnergy,
-        lastSampleTime: Date.now(),
     });
     persistEnergyState();
 
@@ -306,7 +285,7 @@ liveDataRouter.post('/', async (req: Request, res: Response) => {
         energy: totalEnergy,
         frequency: Number(frequency),
         powerFactor: Number(powerFactor),
-        updatedAt: new Date().toISOString(),
+        updatedAt: receivedAt.toISOString(),
     };
 
     res.status(200).json({
@@ -322,4 +301,3 @@ liveDataRouter.post('/', async (req: Request, res: Response) => {
 });
 
 export default liveDataRouter;
-

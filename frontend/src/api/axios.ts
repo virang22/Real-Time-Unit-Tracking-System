@@ -26,6 +26,13 @@ export async function apiRequest<T>(path: string, options: ApiOptions = {}): Pro
     body: body ? JSON.stringify(body) : undefined,
   });
 
+  if (response.status === 401) {
+    localStorage.removeItem("auth_token");
+    localStorage.removeItem("auth_user");
+    window.location.href = "/login";
+    throw new Error("Session expired. Please log in again.");
+  }
+
   const parsed = (await response.json().catch(() => null)) as T | null;
 
   if (!response.ok || !parsed) {

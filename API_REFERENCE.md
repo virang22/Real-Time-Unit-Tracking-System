@@ -384,9 +384,10 @@ Content-Type: application/json
 
 **Required Fields:**
 - `deviceId` - Unique device ID
-- `userId` - User ID (for scoping)
+- `voltage`, `current`, `power`, `energy`, `frequency`, `powerFactor` - Numeric sensor readings
 
 **Optional Fields:**
+- `userId` - User ID (for scoping); if omitted, the backend assigns the reading to its first active account
 - `voltage` - Voltage (default: 0)
 - `current` - Current in amps (default: 0)
 - `power` - Power in watts (default: 0)
@@ -423,13 +424,15 @@ curl -X POST "http://localhost:11020/api/live-data" \
 ```
 
 **Telemetry Triggers:**
-1. Saves data to MongoDB `telemetry` collection
+1. Saves the received readings to MongoDB's `telemetries` collection as a `Telemetry` document, with the server receipt time in `timestamp`; the stored cumulative energy comes from the PZEM payload, with only a continuity offset applied if the meter counter resets
 2. Updates device `lastHeartbeat` 
 3. Runs anomaly detection:
    - Checks voltage (180-250V)
    - Checks frequency (48-52Hz)
    - Checks power vs threshold
 4. Creates alerts if violations detected
+
+Telemetry is retained for 90 days by the MongoDB TTL index on `timestamp`. Billing uses the meter's stored cumulative energy readings and their timestamps; it requires an opening reading on or before the requested period and a closing reading during that period. If that coverage is unavailable, the API reports the available data window and does not create a bill.
 
 ---
 

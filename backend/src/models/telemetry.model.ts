@@ -26,13 +26,14 @@ const telemetrySchema = new Schema<TelemetryDocument>(
         frequency: { type: Number, required: true },
         powerFactor: { type: Number, required: true },
         costPerHour: { type: Number, default: 0 },
-        timestamp: { type: Date, required: true, default: Date.now, index: true },
+        timestamp: { type: Date, required: true, default: Date.now },
     },
     { timestamps: false }
 );
 
 // TTL Index - automatically delete data older than 90 days
 telemetrySchema.index({ timestamp: 1 }, { expireAfterSeconds: 7776000 });
+telemetrySchema.index({ userId: 1, deviceId: 1, timestamp: 1 });
 
 const Telemetry = models.Telemetry || model<TelemetryDocument>('Telemetry', telemetrySchema);
 

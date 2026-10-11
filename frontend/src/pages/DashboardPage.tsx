@@ -49,7 +49,7 @@ export default function DashboardPage() {
     total: null,
   });
   const [chartMode, setChartMode] = useState<"energy" | "power">("energy");
-  const [currentTime, setCurrentTime] = useState(() => Date.now());
+
   const [energyLimit, setEnergyLimit] = useState<number | null>(null);
   const [activeEnergyAlert, setActiveEnergyAlert] = useState<{ limit: number; current: number } | null>(null);
   const [loadChangeAlert, setLoadChangeAlert] = useState<{ from: number; to: number; change: number } | null>(null);
@@ -120,9 +120,7 @@ export default function DashboardPage() {
               return Array.from({ length: 15 }, () => valP);
             }
             return [...prev, valP].slice(-30);
-          });
-
-          setCurrentTime(Date.now());
+          });          // Removed setCurrentTime
         }
       } catch {
         /* ignore polling errors */
@@ -186,6 +184,7 @@ export default function DashboardPage() {
     if (telemetry.energy < energyLimit) {
       energyAlertShown.current = false;
       localStorage.removeItem(alertStorageKey);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setActiveEnergyAlert(null);
     }
 

@@ -6,9 +6,7 @@ import {
   IconChart,
   IconDatabase,
   IconLayoutDashboard,
-  IconPlus,
   IconSettings,
-  IconSwap,
   IconWallet,
 } from "./gridosIcons";
 import AlertNotificationBadge from "../AlertNotificationBadge";
@@ -27,9 +25,6 @@ export default function GridShellLayout() {
 
   const navClass = ({ isActive }: { isActive: boolean }) =>
     `gridos-nav-item${isActive ? " gridos-nav-item--active" : ""}`;
-
-  const deployClass = ({ isActive }: { isActive: boolean }) =>
-    `gridos-deploy${isActive ? " gridos-deploy--active" : ""}`;
 
   const footClass = ({ isActive }: { isActive: boolean }) =>
     `gridos-sidebar-foot-link${isActive ? " gridos-sidebar-foot-link--active" : ""}`;
@@ -65,10 +60,6 @@ export default function GridShellLayout() {
             <IconDatabase />
             Electricity Bills
           </NavLink>
-          <NavLink to="/p2p" className={navClass}>
-            <IconSwap />
-            P2P Marketplace
-          </NavLink>
           <NavLink to="/settings" className={navClass}>
             <IconSettings />
             Settings
@@ -77,16 +68,7 @@ export default function GridShellLayout() {
             <span aria-hidden>!</span>
             Alerts
           </NavLink>
-          <NavLink to="/devices" className={navClass}>
-            <IconDatabase />
-            Devices
-          </NavLink>
         </nav>
-
-        <NavLink to="/deploy" className={deployClass}>
-          <IconPlus />
-          Deploy Contract
-        </NavLink>
 
         <div className="gridos-sidebar-foot">
           <NavLink to="/support" className={footClass}>

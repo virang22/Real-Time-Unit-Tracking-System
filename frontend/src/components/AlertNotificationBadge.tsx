@@ -60,6 +60,14 @@ const AlertNotificationBadge: React.FC<AlertNotificationBadgeProps> = ({ onBadge
             const response = await fetch(`${API_BASE_URL}/alerts?status=ACTIVE`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
+
+            if (response.status === 401) {
+                localStorage.removeItem('auth_token');
+                localStorage.removeItem('auth_user');
+                window.location.href = '/login';
+                return;
+            }
+
             const data = await response.json();
             const newAlerts = data.data || [];
             const newCount = newAlerts.length;
@@ -78,6 +86,7 @@ const AlertNotificationBadge: React.FC<AlertNotificationBadgeProps> = ({ onBadge
     };
 
     useEffect(() => {
+
         void fetchAlerts();
         // Refresh every 30 seconds
         const interval = setInterval(fetchAlerts, 30000);
@@ -96,6 +105,7 @@ const AlertNotificationBadge: React.FC<AlertNotificationBadgeProps> = ({ onBadge
                 clearTimeout(ringingTimerRef.current);
             }
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const getSeverityColor = (severity: string): string => {

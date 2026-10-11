@@ -11,6 +11,7 @@ import {
 } from '../services/electricity-bill-calculator.service';
 
 const electricityBillRouter = Router();
+const MAX_RESIDENTIAL_CONNECTED_LOAD_KW = 15;
 
 function getUserId(req: Request): string | undefined {
     return (req as Request & { userId?: string }).userId;
@@ -23,6 +24,42 @@ function getStatus(status: 'PENDING' | 'PAID', dueDate: Date): 'PENDING' | 'PAID
 
 function serializeBill(bill: InstanceType<typeof ElectricityBill>) {
     return { ...bill.toObject(), status: getStatus(bill.status, bill.dueDate) };
+}
+
+async function getStoredConnectedLoadKw(userId: string, deviceId: string): Promise<number | undefined> {
+    const latestBill = await ElectricityBill.findOne({ userId, deviceId })
+        .sort({ createdAt: -1 })
+        .select('connectedLoadKw');
+    return latestBill?.connectedLoadKw;
+}
+
+function getConnectedLoadError(connectedLoadKw: number, configuredLoadKw?: number): string | null {
+    if (!Number.isFinite(connectedLoadKw) || connectedLoadKw < 0.1 || connectedLoadKw > MAX_RESIDENTIAL_CONNECTED_LOAD_KW) {
+        return `Connected load must be between 0.1 and ${MAX_RESIDENTIAL_CONNECTED_LOAD_KW} kW for residential tariffs`;
+    }
+    if (configuredLoadKw !== undefined && connectedLoadKw > configuredLoadKw) {
+        return `Connected load cannot exceed the ${configuredLoadKw} kW load recorded for this meter`;
+    }
+    return null;
+}
+
+async function getStoredTelemetryWindow(userId: string, deviceId: string) {
+    const query = { userId, deviceId };
+    const [first, last] = await Promise.all([
+        Telemetry.findOne(query).sort({ timestamp: 1 }).select('timestamp'),
+        Telemetry.findOne(query).sort({ timestamp: -1 }).select('timestamp'),
+    ]);
+    return { first: first?.timestamp, last: last?.timestamp };
+}
+
+function getInsufficientReadingsMessage(
+    window: { first?: Date; last?: Date },
+    period: { start: Date; end: Date },
+): string {
+    const span = window.first && window.last
+        ? ` Stored readings for this meter span ${window.first.toISOString()} through ${window.last.toISOString()}.`
+        : ' No stored readings exist for this meter and account.';
+    return `Insufficient stored meter readings for this period; no bill was created.${span} A reading on or before ${period.start.toISOString()} and a closing reading before ${period.end.toISOString()} are required.`;
 }
 
 type BillingPeriodType = 'LAST_10_DAYS' | 'LAST_20_DAYS' | 'ONE_MONTH' | 'TWO_MONTHS' | 'CUSTOM';
@@ -107,6 +144,129 @@ electricityBillRouter.get('/config', (_req: Request, res: Response) => {
     }
 });
 
+electricityBillRouter.get('/current-estimation', async (req: Request, res: Response) => {
+    try {
+        const userId = getUserId(req);
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+        const { deviceId, discom, tariffCategory, isBpl: isBplStr, connectedLoadKw: connectedLoadKwStr } = req.query;
+        if (!deviceId || typeof deviceId !== 'string') return res.status(400).json({ error: 'deviceId is required' });
+        if (!discom || typeof discom !== 'string') return res.status(400).json({ error: 'discom is required' });
+        if (!tariffCategory || !['RGP', 'RGP_RURAL'].includes(String(tariffCategory))) return res.status(400).json({ error: 'tariffCategory is required' });
+
+        const isBpl = isBplStr === 'true';
+        const connectedLoadKw = Number(connectedLoadKwStr);
+        const configuredLoadKw = await getStoredConnectedLoadKw(userId, deviceId);
+        const connectedLoadError = getConnectedLoadError(connectedLoadKw, configuredLoadKw);
+        if (connectedLoadError) return res.status(400).json({ error: connectedLoadError });
+
+        const now = new Date();
+        const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        const currentMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+
+        const previousMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        const previousMonthEnd = currentMonthStart;
+
+        const table = getGujaratTariffTable();
+        const missingUtilitySettings = getMissingUtilityChargeSettings(table);
+        if (missingUtilitySettings.length > 0) {
+            return res.status(503).json({ error: 'Tariff configuration missing' });
+        }
+
+        const [currentMonthOpening, currentLatest] = await Promise.all([
+            Telemetry.findOne({ userId, deviceId, timestamp: { $lt: currentMonthStart } }).sort({ timestamp: -1 }).select('energy timestamp'),
+            Telemetry.findOne({ userId, deviceId, timestamp: { $gte: currentMonthStart } }).sort({ timestamp: -1 }).select('energy timestamp')
+        ]);
+
+        if (!currentMonthOpening || !currentLatest || currentLatest.timestamp < currentMonthStart) {
+            const window = await getStoredTelemetryWindow(userId, deviceId);
+            return res.status(404).json({
+                error: getInsufficientReadingsMessage(window, { start: currentMonthStart, end: currentMonthEnd }),
+            });
+        }
+
+        const consumedUnits = Math.max(0, currentLatest.energy - currentMonthOpening.energy);
+        const daysElapsed = (currentLatest.timestamp.getTime() - currentMonthStart.getTime()) / (1000 * 60 * 60 * 24);
+        const averageDaily = daysElapsed > 0.1 ? consumedUnits / daysElapsed : 0;
+        const daysInMonth = (currentMonthEnd.getTime() - currentMonthStart.getTime()) / (1000 * 60 * 60 * 24);
+        const estimatedMonthEndUnits = averageDaily * daysInMonth;
+
+        const estimatedSlices: MonthlyEnergySlice[] = [{
+            units: estimatedMonthEndUnits,
+            periodFraction: 1
+        }];
+
+        const estimatedCharges = calculateGujaratBillCharges({
+            table,
+            tariffCategory: tariffCategory as 'RGP' | 'RGP_RURAL',
+            isBpl,
+            connectedLoadKw,
+            monthlySlices: estimatedSlices
+        });
+
+        const [prevMonthOpening, prevMonthClosing] = await Promise.all([
+            Telemetry.findOne({ userId, deviceId, timestamp: { $lt: previousMonthStart } }).sort({ timestamp: -1 }).select('energy timestamp'),
+            Telemetry.findOne({ userId, deviceId, timestamp: { $lt: previousMonthEnd } }).sort({ timestamp: -1 }).select('energy timestamp')
+        ]);
+
+        let previousUnits = 0;
+        let previousBillAmount = 0;
+
+        if (prevMonthOpening && prevMonthClosing && prevMonthClosing.timestamp >= previousMonthStart) {
+            previousUnits = Math.max(0, prevMonthClosing.energy - prevMonthOpening.energy);
+            const prevSlices: MonthlyEnergySlice[] = [{
+                units: previousUnits,
+                periodFraction: 1
+            }];
+            const prevCharges = calculateGujaratBillCharges({
+                table,
+                tariffCategory: tariffCategory as 'RGP' | 'RGP_RURAL',
+                isBpl,
+                connectedLoadKw,
+                monthlySlices: prevSlices
+            });
+            previousBillAmount = prevCharges.totalPayable;
+        }
+
+        const unitDifference = estimatedMonthEndUnits - previousUnits;
+        const percentageChange = previousUnits > 0 ? (unitDifference / previousUnits) * 100 : 0;
+        const amountDifference = estimatedCharges.totalPayable - previousBillAmount;
+
+        res.json({
+            success: true,
+            data: {
+                currentConsumption: {
+                    previousReading: currentMonthOpening.energy,
+                    currentReading: currentLatest.energy,
+                    consumedUnits,
+                    periodLabel: currentMonthStart.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+                },
+                estimatedBill: {
+                    consumptionSoFar: consumedUnits,
+                    daysElapsed,
+                    averageDaily,
+                    estimatedMonthEndUnits,
+                    estimatedMonthEndBill: estimatedCharges.totalPayable,
+                    breakdown: estimatedCharges.breakdown
+                },
+                previousComparison: {
+                    previousUnits,
+                    currentUnits: estimatedMonthEndUnits,
+                    unitDifference,
+                    percentageChange,
+                    previousBillAmount,
+                    currentBillAmount: estimatedCharges.totalPayable,
+                    amountDifference
+                }
+            }
+        });
+
+    } catch (error) {
+        Logger.error('Error generating current estimation:', error);
+        res.status(500).json({ error: 'Failed to generate current estimation' });
+    }
+});
+
 electricityBillRouter.get('/', async (req: Request, res: Response) => {
     try {
         const userId = getUserId(req);
@@ -136,9 +296,9 @@ electricityBillRouter.post('/', async (req: Request, res: Response) => {
         if (!deviceId || !period || !dueDate || !['RGP', 'RGP_RURAL'].includes(String(tariffCategory))) {
             return res.status(400).json({ error: 'Choose a meter, billing period, tariff category, and due date' });
         }
-        if (!Number.isFinite(connectedLoadKw) || connectedLoadKw <= 0) {
-            return res.status(400).json({ error: 'Connected load must be greater than zero kW' });
-        }
+        const configuredLoadKw = await getStoredConnectedLoadKw(userId, deviceId);
+        const connectedLoadError = getConnectedLoadError(connectedLoadKw, configuredLoadKw);
+        if (connectedLoadError) return res.status(400).json({ error: connectedLoadError });
         const table = getGujaratTariffTable();
         if (!table.discoms.includes(discom)) return res.status(400).json({ error: 'Select a supported Gujarat state DISCOM' });
         const missingUtilitySettings = getMissingUtilityChargeSettings(table);
@@ -167,7 +327,13 @@ electricityBillRouter.post('/', async (req: Request, res: Response) => {
         ]);
 
         if (!previous || !current || current.timestamp < period.start) {
-            return res.status(409).json({ error: 'Insufficient stored meter readings for this period' });
+            const window = await getStoredTelemetryWindow(userId, deviceId);
+            return res.status(409).json({
+                error: getInsufficientReadingsMessage(window, period),
+                availableDataPeriod: window.first && window.last
+                    ? { from: window.first, through: window.last }
+                    : null,
+            });
         }
         if (current.energy < previous.energy) {
             return res.status(409).json({ error: 'Meter readings are not monotonic for this period' });

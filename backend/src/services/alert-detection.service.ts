@@ -1,6 +1,5 @@
 import { Types } from 'mongoose';
 import Alert, { AlertType, AlertSeverity } from '../models/alert.model';
-import Device from '../models/device.model';
 import Telemetry from '../models/telemetry.model';
 import Logger from '../utils/logger.service';
 import User from '../models/user.model';
@@ -36,6 +35,7 @@ class AlertDetectionService {
             frequency: number;
             powerFactor: number;
             costPerHour: number;
+            timestamp: Date;
         }
     ) {
             // Resolve a valid ObjectId for userId
@@ -43,43 +43,22 @@ class AlertDetectionService {
             if (userId && Types.ObjectId.isValid(userId)) {
                 resolvedUserId = new Types.ObjectId(userId);
             } else {
-                const device = await Device.findOne({ deviceId });
-                if (device?.userId && Types.ObjectId.isValid(device.userId)) {
-                    resolvedUserId = device.userId;
-                } else {
-                    let user = await User.findOne({ isDeleted: false });
-                    if (!user) {
-                        user = await User.create({
-                            name: 'Admin',
-                            email: 'admin@example.com',
-                            energyLimit: 100,
-                        });
-                    }
-                    resolvedUserId = user._id;
+                let user = await User.findOne({ isDeleted: false });
+                if (!user) {
+                    user = await User.create({
+                        name: 'Admin',
+                        email: 'admin@example.com',
+                        energyLimit: 100,
+                    });
                 }
+                resolvedUserId = user._id;
             }
-
-            // Ensure device exists and update heartbeat
-            await Device.findOneAndUpdate(
-                { deviceId },
-                { 
-                    $setOnInsert: {
-                        userId: resolvedUserId,
-                        deviceName: deviceId,
-                        deviceType: 'METER',
-                    },
-                    lastHeartbeat: new Date(),
-                    status: 'ACTIVE'
-                },
-                { upsert: true, new: true }
-            );
 
             // 1. Save telemetry to database
             const telemetry = new Telemetry({
                 userId: resolvedUserId,
                 deviceId,
                 ...data,
-                timestamp: new Date(),
             });
             await telemetry.save();
 
@@ -109,11 +88,10 @@ class AlertDetectionService {
                 status: 'ACTIVE'
             });
             if (!existingWarn) {
-                const device = await Device.findOne({ deviceId });
                 await this.createAlert(
                     userId,
                     deviceId,
-                    device?.deviceName || deviceId,
+                    deviceId,
                     'ENERGY_LIMIT',
                     'HIGH',
                     `⚠️ Approaching Energy Limit: ${limit.toFixed(2)} kWh`,
@@ -134,11 +112,10 @@ class AlertDetectionService {
                 status: 'ACTIVE'
             });
             if (!existingAlert) {
-                const device = await Device.findOne({ deviceId });
                 await this.createAlert(
                     userId,
                     deviceId,
-                    device?.deviceName || deviceId,
+                    deviceId,
                     'ENERGY_LIMIT',
                     'CRITICAL',
                     `🚨 Energy limit reached: ${limit.toFixed(2)} kWh`,
@@ -159,15 +136,12 @@ class AlertDetectionService {
         data: { power: number; voltage: number; frequency: number }
     ) {
         try {
-            const device = await Device.findOne({ deviceId });
-            if (!device) return;
-
             // 1. Check voltage anomaly (should be 220-240V in India)
             if (data.voltage < 180 || data.voltage > 250) {
                 await this.createAlert(
                     userId,
                     deviceId,
-                    device.deviceName,
+                    deviceId,
                     'DEVICE_FAULT',
                     'HIGH',
                     `Abnormal Voltage: ${data.voltage.toFixed(1)}V`,
@@ -182,7 +156,7 @@ class AlertDetectionService {
                 await this.createAlert(
                     userId,
                     deviceId,
-                    device.deviceName,
+                    deviceId,
                     'DEVICE_FAULT',
                     'MEDIUM',
                     `Grid Frequency Issue: ${data.frequency.toFixed(1)}Hz`,
@@ -193,125 +167,23 @@ class AlertDetectionService {
             }
 
             // 3. Check power consumption threshold
-            if (data.power > device.powerThreshold) {
+            const powerThreshold = this.config.powerThresholds[deviceId] ?? 3000; // Default 3kW
+            if (data.power > powerThreshold) {
                 await this.createAlert(
                     userId,
                     deviceId,
-                    device.deviceName,
+                    deviceId,
                     'HIGH_POWER',
                     'HIGH',
                     `High Power Consumption: ${data.power.toFixed(1)}W`,
-                    `Device is consuming more power than configured threshold. Current: ${data.power.toFixed(1)}W, Limit: ${device.powerThreshold}W`,
+                    `Device is consuming more power than configured threshold. Current: ${data.power.toFixed(1)}W, Limit: ${powerThreshold}W`,
                     data.power,
-                    device.powerThreshold
+                    powerThreshold
                 );
             }
 
         } catch (error) {
             Logger.error('Error detecting anomalies:', error);
-        }
-    }
-
-    /**
-     * Check for device offline (called periodically)
-     */
-    async checkOfflineDevices() {
-        try {
-            const timeoutMinutes = this.config.offlineTimeoutMinutes;
-            const timeoutDate = new Date(Date.now() - timeoutMinutes * 60 * 1000);
-
-            const offlineDevices = await Device.find({
-                lastHeartbeat: { $lt: timeoutDate },
-                status: 'ACTIVE',
-                isDeleted: false
-            });
-
-            for (const device of offlineDevices) {
-                // Check if alert already exists
-                const existingAlert = await Alert.findOne({
-                    deviceId: device.deviceId,
-                    alertType: 'DEVICE_OFFLINE',
-                    status: 'ACTIVE'
-                });
-
-                if (!existingAlert) {
-                    await this.createAlert(
-                        device.userId.toString(),
-                        device.deviceId,
-                        device.deviceName,
-                        'DEVICE_OFFLINE',
-                        'CRITICAL',
-                        `Device Offline: ${device.deviceName}`,
-                        `Device has not sent data for more than ${timeoutMinutes} minutes. Last heartbeat: ${device.lastHeartbeat}`,
-                        undefined,
-                        undefined
-                    );
-
-                    // Mark device as inactive
-                    await Device.findByIdAndUpdate(device._id, { status: 'INACTIVE' });
-                }
-            }
-        } catch (error) {
-            Logger.error('Error checking offline devices:', error);
-        }
-    }
-
-    /**
-     * Check for abnormal bills
-     */
-    async checkAbnormalBills() {
-        try {
-            const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-
-            // Group telemetry by userId and deviceId for last 30 days
-            const billData = await Telemetry.aggregate([
-                {
-                    $match: {
-                        timestamp: { $gte: thirtyDaysAgo }
-                    }
-                },
-                {
-                    $group: {
-                        _id: {
-                            userId: '$userId',
-                            deviceId: '$deviceId'
-                        },
-                        totalCost: { $sum: '$costPerHour' },
-                        avgPower: { $avg: '$power' }
-                    }
-                }
-            ]);
-
-            for (const bill of billData) {
-                if (bill.totalCost > this.config.monthlyBillThreshold) {
-                    const device = await Device.findOne({ deviceId: bill._id.deviceId });
-                    if (!device) continue;
-
-                    // Check if alert already exists
-                    const existingAlert = await Alert.findOne({
-                        deviceId: bill._id.deviceId,
-                        alertType: 'ABNORMAL_BILL',
-                        status: 'ACTIVE',
-                        createdAt: { $gte: thirtyDaysAgo }
-                    });
-
-                    if (!existingAlert) {
-                        await this.createAlert(
-                            bill._id.userId.toString(),
-                            bill._id.deviceId,
-                            device.deviceName,
-                            'ABNORMAL_BILL',
-                            'HIGH',
-                            `High Monthly Bill: ₹${bill.totalCost.toFixed(2)}`,
-                            `This month's bill (₹${bill.totalCost.toFixed(2)}) exceeds your threshold of ₹${this.config.monthlyBillThreshold}. Average power: ${bill.avgPower.toFixed(1)}W`,
-                            bill.totalCost,
-                            this.config.monthlyBillThreshold
-                        );
-                    }
-                }
-            }
-        } catch (error) {
-            Logger.error('Error checking abnormal bills:', error);
         }
     }
 
@@ -346,9 +218,6 @@ class AlertDetectionService {
 
             await alert.save();
             Logger.info(`Alert created: ${alertType} for device ${deviceId}`);
-
-            // TODO: Send email/SMS notification here
-            // await this.notificationService.sendAlert(userId, alert);
 
         } catch (error) {
             Logger.error('Error creating alert:', error);
