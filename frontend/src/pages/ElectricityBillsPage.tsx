@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { jsPDF } from "jspdf";
 import PaymentGatewayModal, { type PaymentSuccessData } from "../components/wallet/PaymentGatewayModal";
 import { getToken, clearToken } from "../utils/token";
 import "../styles/electricity-bills.css";
@@ -71,7 +72,7 @@ type EstimationData = {
 };
 
 type ApiResult<T> = { success: boolean; data: T };
-type BillingPeriodType = "LAST_10_DAYS" | "LAST_20_DAYS" | "ONE_MONTH" | "TWO_MONTHS" | "CUSTOM";
+type BillingPeriodType = "ONE_DAY" | "LAST_10_DAYS" | "LAST_20_DAYS" | "ONE_MONTH" | "TWO_MONTHS" | "CUSTOM";
 type TariffProfile = {
   label: string;
   fixedChargesByLoadKw: { upToKw: number | null; amountPerMonth: number }[];
@@ -138,70 +139,90 @@ function formatDateTime(value: string) {
   return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
 }
 
-async function downloadBillPdf(bill: ElectricityBill) {
-  const { jsPDF } = await import("jspdf");
-  const pdf = new jsPDF();
-  const pageWidth = pdf.internal.pageSize.getWidth();
-  const money = (amount: number) => `INR ${amount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  let y = 20;
+function downloadBillPdf(bill: ElectricityBill) {
+  try {
+    const pdf = new jsPDF();
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const money = (amount?: number) =>
+      `INR ${(amount ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    let y = 20;
 
-  pdf.setFont("helvetica", "bold");
-  pdf.setFontSize(17);
-  pdf.text("ELECTRICITY BILL", 14, y);
-  y += 9;
-  pdf.setFontSize(12);
-  pdf.text("GridOS Utility Statement", 14, y);
-  y += 8;
-  pdf.setFont("helvetica", "normal");
-  pdf.setFontSize(10);
-  pdf.text(`Billing period: ${bill.periodLabel ?? bill.period}`, 14, y);
-  y += 6;
-  pdf.text(`DISCOM: ${bill.discom ?? "—"}    Meter: ${bill.deviceId}`, 14, y);
-  y += 6;
-  pdf.text(`Consumer ID: ${bill.userId ?? "—"}`, 14, y);
-  y += 6;
-  pdf.text(`Tariff: ${bill.tariffCategory ?? "—"}${bill.isBpl ? " · BPL" : ""}    Connected load: ${bill.connectedLoadKw ?? "—"} kW`, 14, y);
-  y += 6;
-  pdf.text(`Status: ${bill.status}    Due date: ${formatDate(bill.dueDate)}`, 14, y);
-  y += 11;
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(17);
+    pdf.text("ELECTRICITY BILL", 14, y);
+    y += 9;
+    pdf.setFontSize(12);
+    pdf.text("GridOS Utility Statement", 14, y);
+    y += 8;
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(10);
+    pdf.text(`Billing period: ${bill.periodLabel ?? bill.period ?? "—"}`, 14, y);
+    y += 6;
+    pdf.text(`DISCOM: ${bill.discom ?? "—"}    Meter: ${bill.deviceId ?? "—"}`, 14, y);
+    y += 6;
+    pdf.text(`Consumer ID: ${bill.userId ?? "—"}`, 14, y);
+    y += 6;
+    pdf.text(`Tariff: ${bill.tariffCategory ?? "—"}${bill.isBpl ? " · BPL" : ""}    Connected load: ${bill.connectedLoadKw ?? "—"} kW`, 14, y);
+    y += 6;
+    pdf.text(`Status: ${bill.status}    Due date: ${formatDate(bill.dueDate)}`, 14, y);
+    y += 11;
 
-  pdf.setFont("helvetica", "bold");
-  pdf.text("Meter readings", 14, y);
-  pdf.setFont("helvetica", "normal");
-  pdf.text(`Bill no: ${bill._id}`, pageWidth - 14, y, { align: "right" });
-  y += 7;
-  pdf.text(`Opening: ${bill.previousReading.toFixed(4)} kWh (${formatDateTime(bill.previousReadingAt)})`, 14, y);
-  y += 6;
-  pdf.text(`Closing: ${bill.currentReading.toFixed(4)} kWh (${formatDateTime(bill.currentReadingAt)})`, 14, y);
-  y += 6;
-  pdf.text(`Units consumed: ${bill.consumedUnits.toFixed(4)} kWh`, 14, y);
-  y += 11;
-
-  pdf.setFont("helvetica", "bold");
-  pdf.text("Charges", 14, y);
-  y += 7;
-  pdf.setFont("helvetica", "normal");
-  for (const item of bill.chargeBreakdown ?? [
-    { label: "Energy charges", amount: bill.energyCharges },
-    { label: "Fixed charges", amount: bill.fixedCharges },
-    { label: "Other charges", amount: bill.otherCharges },
-  ]) {
-    pdf.text(item.label, 14, y);
-    pdf.text(money(item.amount), pageWidth - 14, y, { align: "right" });
+    pdf.setFont("helvetica", "bold");
+    pdf.text("Meter readings", 14, y);
+    pdf.setFont("helvetica", "normal");
+    pdf.text(`Bill no: ${bill._id}`, pageWidth - 14, y, { align: "right" });
     y += 7;
-  }
-  y += 2;
-  pdf.setFont("helvetica", "bold");
-  pdf.text("Total payable", 14, y);
-  pdf.text(money(bill.totalPayable), pageWidth - 14, y, { align: "right" });
-  y += 10;
-  pdf.setFont("helvetica", "normal");
-  pdf.setFontSize(8);
-  pdf.text(`Generated on: ${formatDateTime(new Date().toISOString())}`, 14, y);
-  y += 5;
-  if (bill.tariffScheduleName) pdf.text(`Tariff source: ${bill.tariffScheduleName} (effective ${formatDate(bill.tariffEffectiveFrom ?? "")})`, 14, y);
+    pdf.text(`Opening: ${(bill.previousReading ?? 0).toFixed(4)} kWh (${formatDateTime(bill.previousReadingAt)})`, 14, y);
+    y += 6;
+    pdf.text(`Closing: ${(bill.currentReading ?? 0).toFixed(4)} kWh (${formatDateTime(bill.currentReadingAt)})`, 14, y);
+    y += 6;
+    pdf.text(`Units consumed: ${(bill.consumedUnits ?? 0).toFixed(4)} kWh`, 14, y);
+    y += 11;
 
-  pdf.save(`electricity-bill-${bill._id}.pdf`);
+    pdf.setFont("helvetica", "bold");
+    pdf.text("Charges", 14, y);
+    y += 7;
+    pdf.setFont("helvetica", "normal");
+    for (const item of bill.chargeBreakdown ?? [
+      { label: "Energy charges", amount: bill.energyCharges },
+      { label: "Fixed charges", amount: bill.fixedCharges },
+      { label: "Other charges", amount: bill.otherCharges },
+    ]) {
+      pdf.text(item.label, 14, y);
+      pdf.text(money(item.amount), pageWidth - 14, y, { align: "right" });
+      y += 7;
+    }
+    y += 2;
+    pdf.setFont("helvetica", "bold");
+    pdf.text("Total payable", 14, y);
+    pdf.text(money(bill.totalPayable), pageWidth - 14, y, { align: "right" });
+    y += 10;
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(8);
+    pdf.text(`Generated on: ${formatDateTime(new Date().toISOString())}`, 14, y);
+    y += 5;
+    if (bill.tariffScheduleName) {
+      pdf.text(`Tariff source: ${bill.tariffScheduleName} (effective ${formatDate(bill.tariffEffectiveFrom ?? "")})`, 14, y);
+    }
+
+    const filename = `electricity-bill-${bill._id}.pdf`;
+    try {
+      pdf.save(filename);
+    } catch {
+      const blob = pdf.output("blob");
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }
+  } catch (err) {
+    console.error("PDF generation error:", err);
+    alert("Could not generate PDF: " + (err instanceof Error ? err.message : String(err)));
+  }
 }
 
 export default function ElectricityBillsPage() {
@@ -213,11 +234,15 @@ export default function ElectricityBillsPage() {
   const [discom, setDiscom] = useState("");
   const [tariffCategory, setTariffCategory] = useState<"RGP" | "RGP_RURAL">("RGP");
   const [isBpl, setIsBpl] = useState(false);
-  const [connectedLoadKw, setConnectedLoadKw] = useState("");
+  const [connectedLoadKw, setConnectedLoadKw] = useState("0.50");
   const [deviceId, setDeviceId] = useState("");
   const [bills, setBills] = useState<ElectricityBill[]>([]);
   const [tariffConfiguration, setTariffConfiguration] = useState<TariffConfiguration | null>(null);
-  const [dueDate, setDueDate] = useState("");
+  const [dueDate, setDueDate] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 15);
+    return d.toISOString().split("T")[0];
+  });
   const [activeBillId, setActiveBillId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -383,6 +408,7 @@ export default function ElectricityBillsPage() {
           <label className="ebill-field">
             <span>Billing period</span>
             <select value={periodType} onChange={(event) => { setPeriodType(event.target.value as BillingPeriodType); setActiveBillId(null); }}>
+              <option value="ONE_DAY">1 Day</option>
               <option value="LAST_10_DAYS">Last 10 Days</option>
               <option value="LAST_20_DAYS">Last 20 Days</option>
               <option value="ONE_MONTH">1 Month</option>
@@ -502,7 +528,7 @@ export default function ElectricityBillsPage() {
         {isLoading ? <p className="ebill-empty">Loading bill history…</p> : bills.length === 0 ? <p className="ebill-empty">No bills generated yet.</p> : (
           <div className="ebill-table-wrap">
             <table>
-              <thead><tr><th>Period</th><th>Units</th><th>Amount</th><th>Due date</th><th>Status</th><th></th></tr></thead>
+              <thead><tr><th>Period</th><th>Units</th><th>Amount</th><th>Due date</th><th>Status</th><th style={{ textAlign: "right" }}>Actions</th></tr></thead>
               <tbody>
                 {bills.map((bill) => (
                   <tr key={bill._id}>
@@ -511,7 +537,12 @@ export default function ElectricityBillsPage() {
                     <td>{formatMoney(bill.totalPayable)}</td>
                     <td>{formatDate(bill.dueDate)}</td>
                     <td><span className={`ebill-status ebill-status--${bill.status.toLowerCase()}`}>{bill.status}</span></td>
-                    <td><button className="ebill-view-button" type="button" onClick={() => setActiveBillId(bill._id)}>View bill</button></td>
+                    <td>
+                      <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end", alignItems: "center" }}>
+                        <button className="ebill-view-button" type="button" onClick={() => setActiveBillId(bill._id)}>View bill</button>
+                        <button className="ebill-view-button" style={{ background: "#e8f4f1", color: "#14594c", border: "1px solid #c2e5dc" }} type="button" onClick={() => downloadBillPdf(bill)}>Download PDF</button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -527,6 +558,7 @@ export default function ElectricityBillsPage() {
           onClose={() => setPaymentBill(null)}
           onSuccess={handlePaymentSuccess}
           purpose="bill"
+          billId={paymentBill._id}
           initialAmount={paymentBill.totalPayable}
           lockAmount
         />

@@ -12,13 +12,15 @@ type ApiOptions = {
   method?: HttpMethod;
   body?: unknown;
   token?: string | null;
+  cache?: RequestCache;
 };
 
 export async function apiRequest<T>(path: string, options: ApiOptions = {}): Promise<T> {
-  const { method = "GET", body, token } = options;
+  const { method = "GET", body, token, cache } = options;
 
   const response = await fetch(`${resolvedApiBaseUrl}${path}`, {
     method,
+    cache,
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),

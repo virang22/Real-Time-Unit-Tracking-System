@@ -32,6 +32,13 @@ type EnergyAnalysisData = {
   availableMonths: string[];
 };
 
+function formatEnergy(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0.0000";
+  if (value < 1) return value.toFixed(4);
+  if (value < 10) return value.toFixed(3);
+  return value.toFixed(2);
+}
+
 export default function AnalyticsPage() {
   const [telemetry, setTelemetry] = useState<TelemetryData>({
     power: 0,
@@ -61,7 +68,7 @@ export default function AnalyticsPage() {
     };
 
     void fetchTelemetry();
-    const interval = setInterval(fetchTelemetry, 2000);
+    const interval = setInterval(fetchTelemetry, 1000);
     return () => {
       isMounted = false;
       clearInterval(interval);
@@ -93,7 +100,7 @@ export default function AnalyticsPage() {
     };
 
     void fetchEnergyAnalysis();
-    const energyInterval = setInterval(fetchEnergyAnalysis, 30000);
+    const energyInterval = setInterval(fetchEnergyAnalysis, 2000);
     return () => {
       isMounted = false;
       clearInterval(energyInterval);
@@ -131,7 +138,7 @@ export default function AnalyticsPage() {
             <div>
               <p className="gridos-usage-label">This week</p>
               <p className="gridos-usage-total">
-                {weeklyTotal.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
+                {formatEnergy(weeklyTotal)}
                 <span>kWh</span>
               </p>
             </div>
@@ -151,7 +158,7 @@ export default function AnalyticsPage() {
             <div>
               <p className="gridos-usage-label">Daily energy consumption</p>
               <p className="gridos-usage-total">
-                {selectedMonthTotal.toFixed(1)}
+                {formatEnergy(selectedMonthTotal)}
                 <span>kWh</span>
               </p>
             </div>
@@ -179,8 +186,8 @@ export default function AnalyticsPage() {
           <Card className="gridos-rt-card">
             <MetricGauge
               label="Live load"
-              value={isOnline ? livePowerKw.toFixed(2) : "—"}
-              unit="kW"
+              value={isOnline ? (livePowerKw >= 0.1 ? livePowerKw.toFixed(2) : Number(telemetry.power || 0).toFixed(1)) : "—"}
+              unit={isOnline ? (livePowerKw >= 0.1 ? "kW" : "W") : ""}
               trend={isOnline ? "Streaming" : "No live data"}
               fillPortion={fillPortion}
             />
@@ -191,6 +198,8 @@ export default function AnalyticsPage() {
           <Card className="gridos-rt-card">
             <div className="ac-summary-list">
               {[
+                { label: "Total energy", value: isOnline ? `${Number(telemetry.energy || 0).toFixed(6)} kWh` : "—" },
+                { label: "Active power", value: isOnline ? `${Number(telemetry.power || 0).toFixed(2)} W` : "—" },
                 { label: "Voltage", value: isOnline ? `${Number(telemetry.voltage).toFixed(2)} V` : "—" },
                 { label: "Current", value: isOnline ? `${Number(telemetry.current).toFixed(3)} A` : "—" },
                 { label: "Frequency", value: isOnline ? `${Number(telemetry.frequency).toFixed(2)} Hz` : "—" },

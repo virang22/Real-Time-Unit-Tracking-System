@@ -23,6 +23,10 @@ const env = cleanEnv(process.env, {
     SMTP_EMAIL: str(),
     SMTP_PASSWORD: str(),
     SMTP_RECEIVER_EMAIL: str(),
+
+    // Razorpay Configuration
+    RAZORPAY_KEY_ID: str({ default: '' }),
+    RAZORPAY_KEY_SECRET: str({ default: '' }),
 });
 
 export default env; 

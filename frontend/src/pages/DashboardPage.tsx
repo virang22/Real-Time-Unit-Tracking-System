@@ -4,6 +4,7 @@ import { getToken } from "../utils/token";
 import { playAlarmSound } from "../utils/alertSound";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:11020/api";
+const TELEMETRY_STALE_MS = 8000;
 const configuredHighPowerThreshold = Number(import.meta.env.VITE_HIGH_POWER_THRESHOLD_W);
 const HIGH_POWER_THRESHOLD_W = Number.isFinite(configuredHighPowerThreshold) && configuredHighPowerThreshold > 0
   ? configuredHighPowerThreshold
@@ -49,6 +50,7 @@ export default function DashboardPage() {
     total: null,
   });
   const [chartMode, setChartMode] = useState<"energy" | "power">("energy");
+  const [apiAvailable, setApiAvailable] = useState(true);
 
   const [energyLimit, setEnergyLimit] = useState<number | null>(null);
   const [activeEnergyAlert, setActiveEnergyAlert] = useState<{ limit: number; current: number } | null>(null);
@@ -61,37 +63,53 @@ export default function DashboardPage() {
 
   useEffect(() => {
     let isMounted = true;
+    let isFetchingLiveTelemetry = false;
 
     const fetchLiveTelemetry = async () => {
+      if (isFetchingLiveTelemetry) return;
+      isFetchingLiveTelemetry = true;
+
       try {
-        const data = await apiRequest<TelemetryData>("/live-data");
+        const data = await apiRequest<TelemetryData>("/live-data", { cache: "no-store" });
         if (isMounted && data) {
+          setApiAvailable(true);
           setTelemetry((prev) => ({ ...prev, ...data }));
           const valE = Number(data.energy) || 0;
           const valP = Number(data.power) || 0;
+          const sampleTimestamp = data.updatedAt;
+          const updatedAt = sampleTimestamp ? Date.parse(sampleTimestamp) : Number.NaN;
+          const hasFreshTelemetry =
+            data.gridStatus !== "OFFLINE" &&
+            typeof sampleTimestamp === "string" &&
+            Number.isFinite(updatedAt) &&
+            Date.now() - updatedAt >= 0 &&
+            Date.now() - updatedAt < TELEMETRY_STALE_MS;
 
-          if (data.gridStatus === "OFFLINE" || !data.updatedAt || !Number.isFinite(Number(data.power))) {
+          if (!hasFreshTelemetry || !Number.isFinite(Number(data.power)) || typeof sampleTimestamp !== "string") {
             lastPowerSample.current = null;
             highPowerSamples.current = 0;
             highPowerAlertActive.current = false;
             setHighPowerAlert(null);
           } else {
             const previousSample = lastPowerSample.current;
-            const isFreshSample = !previousSample || data.updatedAt !== previousSample.updatedAt;
+            const isFreshSample = !previousSample || sampleTimestamp !== previousSample.updatedAt;
             if (!previousSample) {
-              lastPowerSample.current = { power: valP, updatedAt: data.updatedAt };
+              lastPowerSample.current = { power: valP, updatedAt: sampleTimestamp };
             } else if (isFreshSample) {
               const change = valP - previousSample.power;
               const threshold = Math.max(3, Math.abs(previousSample.power) * 0.2);
               if (Math.abs(change) >= threshold) {
                 setLoadChangeAlert({ from: previousSample.power, to: valP, change });
-                lastPowerSample.current = { power: valP, updatedAt: data.updatedAt };
+                lastPowerSample.current = { power: valP, updatedAt: sampleTimestamp };
               } else {
-                lastPowerSample.current = { ...previousSample, updatedAt: data.updatedAt };
+                lastPowerSample.current = { ...previousSample, updatedAt: sampleTimestamp };
               }
             }
 
             if (isFreshSample) {
+              setEnergyHistory((prev) => [...prev, valE].slice(-30));
+              setPowerHistory((prev) => [...prev, valP].slice(-30));
+
               if (valP > HIGH_POWER_THRESHOLD_W) {
                 highPowerSamples.current += 1;
                 if (highPowerSamples.current >= 2 && !highPowerAlertActive.current) {
@@ -107,23 +125,17 @@ export default function DashboardPage() {
               }
             }
           }
-
-          setEnergyHistory((prev) => {
-            if (prev.length === 0) {
-              return Array.from({ length: 15 }, () => valE);
-            }
-            return [...prev, valE].slice(-30);
-          });
-
-          setPowerHistory((prev) => {
-            if (prev.length === 0) {
-              return Array.from({ length: 15 }, () => valP);
-            }
-            return [...prev, valP].slice(-30);
-          });          // Removed setCurrentTime
         }
       } catch {
-        /* ignore polling errors */
+        if (isMounted) {
+          setApiAvailable(false);
+          lastPowerSample.current = null;
+          highPowerSamples.current = 0;
+          highPowerAlertActive.current = false;
+          setHighPowerAlert(null);
+        }
+      } finally {
+        isFetchingLiveTelemetry = false;
       }
     };
 
@@ -156,8 +168,8 @@ export default function DashboardPage() {
 
     void fetchEnergyAnalysis();
     void fetchEnergyLimit();
-    const interval = setInterval(fetchLiveTelemetry, 2000);
-    const energyAnalysisInterval = setInterval(fetchEnergyAnalysis, 30000);
+    const interval = setInterval(fetchLiveTelemetry, 1000);
+    const energyAnalysisInterval = setInterval(fetchEnergyAnalysis, 3000);
     const limitInterval = setInterval(fetchEnergyLimit, 5000);
 
     return () => {
@@ -184,7 +196,6 @@ export default function DashboardPage() {
     if (telemetry.energy < energyLimit) {
       energyAlertShown.current = false;
       localStorage.removeItem(alertStorageKey);
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setActiveEnergyAlert(null);
     }
 
@@ -197,13 +208,21 @@ export default function DashboardPage() {
   }, [energyLimit, telemetry.energy]);
 
   // Consider online if gridStatus returned from backend is not OFFLINE
+  const telemetryUpdatedAt = telemetry.updatedAt ? Date.parse(telemetry.updatedAt) : Number.NaN;
   const isOnline = Boolean(
-    telemetry.gridStatus && telemetry.gridStatus !== "OFFLINE"
+    apiAvailable &&
+    telemetry.gridStatus &&
+    telemetry.gridStatus !== "OFFLINE" &&
+    Number.isFinite(telemetryUpdatedAt) &&
+    Date.now() - telemetryUpdatedAt >= 0 &&
+    Date.now() - telemetryUpdatedAt < TELEMETRY_STALE_MS
   );
 
-  const deviceDisplayName = isOnline
-    ? (telemetry.deviceId === "ESP32-GRID-NODE-01" ? "ESP32 (MyPhone)" : (telemetry.deviceId || "ESP32 Connected"))
-    : "ESP32 Offline (Disconnected)";
+  const deviceDisplayName = !apiAvailable
+    ? "Backend unavailable"
+    : isOnline
+      ? (telemetry.deviceId || "ESP32 Connected")
+      : "ESP32 Offline (Disconnected)";
 
   const metrics = [
     {
@@ -244,7 +263,7 @@ export default function DashboardPage() {
     },
     {
       title: "ENERGY",
-      value: isOnline ? Number(telemetry.energy || 0).toFixed(4) : Number(telemetry.energy || 0).toFixed(4),
+      value: Number(telemetry.energy || 0).toFixed(6),
       unit: "kWh",
       subtitle: "Total consumed",
       tone: "purple",
@@ -284,7 +303,8 @@ export default function DashboardPage() {
     { label: "CONNECTION", value: deviceDisplayName },
     { label: "VOLTAGE", value: isOnline ? `${Number(telemetry.voltage).toFixed(2)} V` : "— (Waiting for telemetry)" },
     { label: "CURRENT", value: isOnline ? `${Number(telemetry.current).toFixed(3)} A` : "—" },
-    { label: "POWER",   value: isOnline ? `${Number(telemetry.power).toFixed(2)} W` : "—" }
+    { label: "POWER",   value: isOnline ? `${Number(telemetry.power).toFixed(2)} W` : "—" },
+    { label: "ENERGY",  value: `${Number(telemetry.energy || 0).toFixed(6)} kWh` }
   ];
 
   const energyPeriods = [
@@ -300,14 +320,14 @@ export default function DashboardPage() {
   const activeUnit = chartMode === "energy" ? "kWh" : "W";
   const activeLabel = chartMode === "energy" ? "Energy Consumption (kWh)" : "Real-Time Power (W)";
 
-  const pointsList = activeHistory.length > 0 ? activeHistory : [activeVal];
-  const rawMin = Math.min(...pointsList);
-  const rawMax = Math.max(...pointsList);
+  const pointsList = activeHistory;
+  const rawMin = pointsList.length > 0 ? Math.min(...pointsList) : 0;
+  const rawMax = pointsList.length > 0 ? Math.max(...pointsList) : 0;
   const diff = rawMax - rawMin;
 
-  const pad = diff > 0.05
+  const pad = diff > 0.00005
     ? diff * 0.25
-    : (rawMax > 0 ? Math.max(0.5, rawMax * 0.08) : 1);
+    : (chartMode === "energy" ? 0.0002 : (rawMax > 0 ? Math.max(0.5, rawMax * 0.08) : 1));
   const chartMin = Math.max(0, rawMin - pad);
   const chartMax = rawMax + pad;
   const range = chartMax - chartMin || 1;
@@ -320,9 +340,7 @@ export default function DashboardPage() {
   });
 
   let linePath = "";
-  if (points.length === 1) {
-    linePath = `M 0 ${points[0].y.toFixed(1)} L 700 ${points[0].y.toFixed(1)}`;
-  } else if (points.length > 1) {
+  if (points.length > 1) {
     linePath = `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
     for (let i = 0; i < points.length - 1; i++) {
       const p0 = points[i === 0 ? 0 : i - 1];
@@ -539,16 +557,25 @@ export default function DashboardPage() {
             <text x="24" y="22" className="ac-chart-label ac-chart-label--left">{activeLabel}</text>
             
             {areaPath ? <path d={areaPath} className="ac-chart-area" fill="url(#chartAreaGradient)" /> : null}
-            <path d={linePath} className="ac-chart-line" />
+            {linePath ? <path d={linePath} className="ac-chart-line" /> : null}
 
-            <circle cx={chartPointX} cy={chartPointY} className="ac-live-dot-pulse" />
-            <circle cx={chartPointX} cy={chartPointY} r="5.5" className="ac-chart-main-dot" />
-
-            <text x="660" y="214" textAnchor="end" className="ac-chart-label">Min {chartMin.toFixed(1)} {activeUnit}</text>
-            <text x="660" y="30" textAnchor="end" className="ac-chart-label">Max {chartMax.toFixed(1)} {activeUnit}</text>
-            <text x={chartLabelX} y={chartLabelY} textAnchor={chartLabelAnchor} className="ac-chart-label">
-              Now {activeVal.toFixed(1)} {activeUnit}
-            </text>
+            {points.length > 0 ? (
+              <>
+                <circle cx={chartPointX} cy={chartPointY} className="ac-live-dot-pulse" />
+                <circle cx={chartPointX} cy={chartPointY} r="5.5" className="ac-chart-main-dot" />
+                <text x="660" y="214" textAnchor="end" className="ac-chart-label">Min {chartMin.toFixed(chartMode === "energy" ? 4 : 1)} {activeUnit}</text>
+                <text x="660" y="30" textAnchor="end" className="ac-chart-label">Max {chartMax.toFixed(chartMode === "energy" ? 4 : 1)} {activeUnit}</text>
+                {isOnline ? (
+                  <text x={chartLabelX} y={chartLabelY} textAnchor={chartLabelAnchor} className="ac-chart-label">
+                    Now {activeVal.toFixed(chartMode === "energy" ? 6 : 1)} {activeUnit}
+                  </text>
+                ) : null}
+              </>
+            ) : (
+              <text x="350" y="130" textAnchor="middle" className="ac-chart-label">
+                Waiting for real ESP32 telemetry
+              </text>
+            )}
             <text x="16" y="246" className="ac-chart-label">Recent</text>
             <text x="660" y="246" textAnchor="end" className="ac-chart-label">Live</text>
           </svg>
@@ -600,4 +627,3 @@ export default function DashboardPage() {
     </div>
   );
 }
-

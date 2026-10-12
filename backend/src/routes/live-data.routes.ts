@@ -11,6 +11,7 @@ type EnergyState = {
     offset: number;
     lastRawEnergy: number;
     lastReportedEnergy: number;
+    lastSampleTime?: number;
 };
 
 // Keeps the dashboard total continuous across server restarts and ESP32 reconnects.
@@ -27,9 +28,9 @@ try {
     Logger.error('[Energy] Error reading energy state file:', err);
 }
 
-// 2. Initialize demoEnergy from the loaded state (resumes counting from last saved value)
+// 2. Initialize totalEnergy from the loaded state (resumes counting from last saved value)
 const savedGridEnergy = energyByDevice.get('ESP32-GRID-NODE-01')?.lastReportedEnergy ?? 0;
-let totalEnergy = Number(savedGridEnergy.toFixed(4));
+let totalEnergy = Number(savedGridEnergy.toFixed(6));
 Logger.info(`[Energy] Starting/resuming total energy at: ${totalEnergy} kWh`);
 
 function persistEnergyState(): void {
@@ -60,6 +61,8 @@ let latestTelemetry = {
 
 // GET /api/live-data - Frontend fetches live status
 liveDataRouter.get('/', (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+
     // 8000ms window: ESP32 posts every 2s, so 4x buffer before declaring offline
     const isOnline = Boolean(
         latestTelemetry.updatedAt &&
@@ -74,13 +77,14 @@ liveDataRouter.get('/', (_req: Request, res: Response) => {
             power: 0,
             frequency: 0,
             powerFactor: 0,
-            energy: Number(latestTelemetry.energy || 0),
+            energy: Number((latestTelemetry.energy || 0).toFixed(6)),
             gridStatus: 'OFFLINE',
         });
     }
 
     res.json({
         ...latestTelemetry,
+        energy: Number((latestTelemetry.energy || 0).toFixed(6)),
         gridStatus: 'OPTIMAL',
     });
 });
@@ -107,7 +111,14 @@ liveDataRouter.get('/energy-analysis', async (_req: Request, res: Response) => {
             const periodLatest = await Telemetry.findOne({ deviceId, timestamp: { $gte: start, $lt: end } })
                 .sort({ timestamp: -1 })
                 .select('energy');
-            if (!periodLatest) return 0;
+
+            const isCurrentPeriod = start <= now && end > now;
+            let currentPeriodEnergy = periodLatest ? periodLatest.energy : 0;
+            if (isCurrentPeriod && latestTelemetry.deviceId === deviceId && latestTelemetry.energy > 0) {
+                currentPeriodEnergy = Math.max(currentPeriodEnergy, latestTelemetry.energy);
+            }
+
+            if (!periodLatest && !isCurrentPeriod) return 0;
 
             const baseline = await Telemetry.findOne({ deviceId, timestamp: { $lte: start } })
                 .sort({ timestamp: -1 })
@@ -117,7 +128,7 @@ liveDataRouter.get('/energy-analysis', async (_req: Request, res: Response) => {
                 .select('energy');
 
             if (!firstInPeriod) return 0;
-            return Number(Math.max(0, periodLatest.energy - firstInPeriod.energy).toFixed(4));
+            return Number(Math.max(0, currentPeriodEnergy - firstInPeriod.energy).toFixed(4));
         };
 
         const weekDays = Array.from({ length: 7 }, (_, index) => {
@@ -135,26 +146,27 @@ liveDataRouter.get('/energy-analysis', async (_req: Request, res: Response) => {
             Promise.all(weekDays.map(({ start, end }) => consumptionBetween(start, end))),
             Promise.all(yearMonths.map(({ start, end }) => consumptionBetween(start, end))),
         ]);
-        let selectedMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-        let selectedMonthDaily: number[] = [];
-        let availableMonths: string[] = [];
-        if (monthMatch) {
-            const year = Number(monthMatch[1]);
-            const month = Number(monthMatch[2]);
-            selectedMonth = requestedMonth!;
-            const daysInMonth = new Date(year, month, 0).getDate();
-            selectedMonthDaily = await Promise.all(Array.from({ length: daysInMonth }, (_, index) => {
-                const start = new Date(year, month - 1, index + 1);
-                const end = new Date(year, month - 1, index + 2);
-                return consumptionBetween(start, end);
-            }));
-            const storedMonths = await Telemetry.aggregate([
-                { $match: { deviceId } },
-                { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$timestamp' } } } },
-                { $sort: { _id: -1 } },
-                { $limit: 36 },
-            ]);
-            availableMonths = storedMonths.map(({ _id }) => String(_id));
+
+        const defaultMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+        const targetMonthStr = monthMatch ? requestedMonth! : defaultMonth;
+        const [targetYear, targetMonthNum] = targetMonthStr.split('-').map(Number);
+        const selectedMonth = targetMonthStr;
+        const daysInMonth = new Date(targetYear, targetMonthNum, 0).getDate();
+        const selectedMonthDaily = await Promise.all(Array.from({ length: daysInMonth }, (_, index) => {
+            const start = new Date(targetYear, targetMonthNum - 1, index + 1);
+            const end = new Date(targetYear, targetMonthNum - 1, index + 2);
+            return consumptionBetween(start, end);
+        }));
+
+        const storedMonths = await Telemetry.aggregate([
+            { $match: { deviceId } },
+            { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$timestamp' } } } },
+            { $sort: { _id: -1 } },
+            { $limit: 36 },
+        ]);
+        const availableMonths: string[] = storedMonths.map(({ _id }) => String(_id));
+        if (!availableMonths.includes(defaultMonth)) {
+            availableMonths.unshift(defaultMonth);
         }
         const todayIndex = (now.getDay() + 6) % 7;
         const thisWeek = Number(weekDaily.reduce((sum, value) => sum + value, 0).toFixed(4));
@@ -163,7 +175,7 @@ liveDataRouter.get('/energy-analysis', async (_req: Request, res: Response) => {
             today: weekDaily[todayIndex],
             thisWeek,
             thisMonth: yearMonthly[now.getMonth()],
-            total: latest ? Number(latest.energy.toFixed(4)) : 0,
+            total: latest ? Number(latest.energy.toFixed(6)) : Number(totalEnergy.toFixed(6)),
             weekDaily,
             yearMonthly,
             selectedMonth,
@@ -239,22 +251,45 @@ liveDataRouter.post('/', async (req: Request, res: Response) => {
 
     const normalizedDeviceId = deviceId.trim();
     const rawEnergy = Number(energy);
+    const pwr = Number(power);
+    const now = Date.now();
     const previousEnergy = energyByDevice.get(normalizedDeviceId);
-    let offset = previousEnergy?.offset ?? 0;
-    
-    let reportedEnergy = offset + rawEnergy;
+
+    let reportedEnergy: number;
+    let offset: number;
 
     if (previousEnergy) {
-        if (rawEnergy < previousEnergy.lastRawEnergy) {
-            // Device rebooted or reset
-            offset = previousEnergy.lastReportedEnergy - rawEnergy;
-            reportedEnergy = offset + rawEnergy;
+        const lastReported = previousEnergy.lastReportedEnergy;
+        const lastSampleTime = previousEnergy.lastSampleTime || (now - 1000);
+        const elapsedMs = Math.max(100, Math.min(10000, now - lastSampleTime));
+        const elapsedHours = elapsedMs / 3600000;
+
+        // Accurate numerical integration of real sensor active power (W * hours / 1000 = kWh)
+        const integratedDelta = pwr > 0 ? (pwr * elapsedHours) / 1000 : 0;
+        const rawDelta = rawEnergy - previousEnergy.lastRawEnergy;
+
+        // If firmware sends high-resolution energy updates (< 0.0005 kWh = 0.5 Wh), track firmware delta.
+        // Otherwise use real sensor active power integration so energy increases smoothly every second
+        // without quantization freeze and without double-counting coarse PZEM register ticks.
+        let energyDelta: number;
+        if (rawDelta > 0 && rawDelta < 0.0005) {
+            energyDelta = Math.max(rawDelta, integratedDelta);
         } else {
-            reportedEnergy = offset + rawEnergy;
+            energyDelta = integratedDelta;
         }
+
+        reportedEnergy = Number((lastReported + energyDelta).toFixed(6));
+        offset = Number((reportedEnergy - rawEnergy).toFixed(6));
+    } else {
+        reportedEnergy = totalEnergy > 0 ? Number(totalEnergy.toFixed(6)) : Number(rawEnergy.toFixed(6));
+        offset = Number((reportedEnergy - rawEnergy).toFixed(6));
     }
 
-    Logger.info(`[ESP32 Ingest] V: ${voltage}V | I: ${current}A | P: ${power}W | Raw E: ${rawEnergy}kWh | Total E: ${reportedEnergy.toFixed(4)}kWh | Dev: ${normalizedDeviceId}`);
+    Logger.info(`[ESP32 Ingest] V: ${voltage}V | I: ${current}A | P: ${power}W | Raw E: ${rawEnergy}kWh | Total E: ${reportedEnergy.toFixed(6)}kWh | Dev: ${normalizedDeviceId}`);
+
+    const tariffPerKwh = 6.0;
+    const calculatedCostPerHour = Number(((pwr / 1000) * tariffPerKwh).toFixed(4));
+    const costPerHour = Number(req.body.costPerHour || calculatedCostPerHour);
 
     const receivedAt = new Date();
     await alertDetectionService.processTelemetry(userId, normalizedDeviceId, {
@@ -264,7 +299,7 @@ liveDataRouter.post('/', async (req: Request, res: Response) => {
         energy: reportedEnergy,
         frequency: Number(frequency),
         powerFactor: Number(powerFactor),
-        costPerHour: Number(req.body.costPerHour || 0),
+        costPerHour,
         timestamp: receivedAt,
     });
 
@@ -272,6 +307,7 @@ liveDataRouter.post('/', async (req: Request, res: Response) => {
         offset,
         lastRawEnergy: rawEnergy,
         lastReportedEnergy: reportedEnergy,
+        lastSampleTime: now,
     });
     persistEnergyState();
 
@@ -285,6 +321,7 @@ liveDataRouter.post('/', async (req: Request, res: Response) => {
         energy: totalEnergy,
         frequency: Number(frequency),
         powerFactor: Number(powerFactor),
+        costPerHour,
         updatedAt: receivedAt.toISOString(),
     };
 

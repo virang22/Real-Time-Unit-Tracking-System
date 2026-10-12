@@ -33,21 +33,17 @@ async function getStoredConnectedLoadKw(userId: string, deviceId: string): Promi
     return latestBill?.connectedLoadKw;
 }
 
-function getConnectedLoadError(connectedLoadKw: number, configuredLoadKw?: number): string | null {
+function getConnectedLoadError(connectedLoadKw: number): string | null {
     if (!Number.isFinite(connectedLoadKw) || connectedLoadKw < 0.1 || connectedLoadKw > MAX_RESIDENTIAL_CONNECTED_LOAD_KW) {
         return `Connected load must be between 0.1 and ${MAX_RESIDENTIAL_CONNECTED_LOAD_KW} kW for residential tariffs`;
-    }
-    if (configuredLoadKw !== undefined && connectedLoadKw > configuredLoadKw) {
-        return `Connected load cannot exceed the ${configuredLoadKw} kW load recorded for this meter`;
     }
     return null;
 }
 
 async function getStoredTelemetryWindow(userId: string, deviceId: string) {
-    const query = { userId, deviceId };
     const [first, last] = await Promise.all([
-        Telemetry.findOne(query).sort({ timestamp: 1 }).select('timestamp'),
-        Telemetry.findOne(query).sort({ timestamp: -1 }).select('timestamp'),
+        Telemetry.findOne({ deviceId }).sort({ timestamp: 1 }).select('timestamp'),
+        Telemetry.findOne({ deviceId }).sort({ timestamp: -1 }).select('timestamp'),
     ]);
     return { first: first?.timestamp, last: last?.timestamp };
 }
@@ -62,7 +58,7 @@ function getInsufficientReadingsMessage(
     return `Insufficient stored meter readings for this period; no bill was created.${span} A reading on or before ${period.start.toISOString()} and a closing reading before ${period.end.toISOString()} are required.`;
 }
 
-type BillingPeriodType = 'LAST_10_DAYS' | 'LAST_20_DAYS' | 'ONE_MONTH' | 'TWO_MONTHS' | 'CUSTOM';
+type BillingPeriodType = 'ONE_DAY' | 'LAST_1_DAY' | 'LAST_10_DAYS' | 'LAST_20_DAYS' | 'ONE_MONTH' | 'TWO_MONTHS' | 'CUSTOM';
 
 function parseDateOnly(value: unknown): Date | null {
     if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
@@ -84,12 +80,13 @@ function resolvePeriod(body: Record<string, unknown>): { type: BillingPeriodType
     let label: string;
     let key: string;
 
-    if (type === 'LAST_10_DAYS' || type === 'LAST_20_DAYS') {
-        const days = type === 'LAST_10_DAYS' ? 10 : 20;
+    if (type === 'ONE_DAY' || type === 'LAST_1_DAY' || type === 'LAST_10_DAYS' || type === 'LAST_20_DAYS') {
+        const days = (type === 'ONE_DAY' || type === 'LAST_1_DAY') ? 1 : (type === 'LAST_10_DAYS' ? 10 : 20);
         end = tomorrow;
         start = new Date(end);
         start.setDate(start.getDate() - days);
-        label = `Last ${days} Days (${dateKey(start)} to ${dateKey(new Date(end.getTime() - 86400000))})`;
+        const dayLabel = days === 1 ? '1 Day' : `Last ${days} Days`;
+        label = `${dayLabel} (${dateKey(start)} to ${dateKey(new Date(end.getTime() - 86400000))})`;
         key = `${type}:${dateKey(start)}:${dateKey(new Date(end.getTime() - 86400000))}`;
     } else if (type === 'ONE_MONTH' || type === 'TWO_MONTHS') {
         const month = typeof body.month === 'string' ? /^(\d{4})-(0[1-9]|1[0-2])$/.exec(body.month) : null;
@@ -156,8 +153,7 @@ electricityBillRouter.get('/current-estimation', async (req: Request, res: Respo
 
         const isBpl = isBplStr === 'true';
         const connectedLoadKw = Number(connectedLoadKwStr);
-        const configuredLoadKw = await getStoredConnectedLoadKw(userId, deviceId);
-        const connectedLoadError = getConnectedLoadError(connectedLoadKw, configuredLoadKw);
+        const connectedLoadError = getConnectedLoadError(connectedLoadKw);
         if (connectedLoadError) return res.status(400).json({ error: connectedLoadError });
 
         const now = new Date();
@@ -173,12 +169,20 @@ electricityBillRouter.get('/current-estimation', async (req: Request, res: Respo
             return res.status(503).json({ error: 'Tariff configuration missing' });
         }
 
-        const [currentMonthOpening, currentLatest] = await Promise.all([
-            Telemetry.findOne({ userId, deviceId, timestamp: { $lt: currentMonthStart } }).sort({ timestamp: -1 }).select('energy timestamp'),
-            Telemetry.findOne({ userId, deviceId, timestamp: { $gte: currentMonthStart } }).sort({ timestamp: -1 }).select('energy timestamp')
-        ]);
+        let currentMonthOpening = await Telemetry.findOne({ deviceId, timestamp: { $lte: currentMonthStart } }).sort({ timestamp: -1 }).select('energy timestamp');
+        let currentLatest = await Telemetry.findOne({ deviceId, timestamp: { $lte: currentMonthEnd } }).sort({ timestamp: -1 }).select('energy timestamp');
 
-        if (!currentMonthOpening || !currentLatest || currentLatest.timestamp < currentMonthStart) {
+        if (!currentMonthOpening && currentLatest) {
+            currentMonthOpening = await Telemetry.findOne({ deviceId, timestamp: { $gte: currentMonthStart, $lte: currentMonthEnd } }).sort({ timestamp: 1 }).select('energy timestamp');
+        }
+        if (!currentLatest) {
+            currentLatest = await Telemetry.findOne({ deviceId }).sort({ timestamp: -1 }).select('energy timestamp');
+        }
+        if (!currentMonthOpening) {
+            currentMonthOpening = currentLatest;
+        }
+
+        if (!currentMonthOpening || !currentLatest) {
             const window = await getStoredTelemetryWindow(userId, deviceId);
             return res.status(404).json({
                 error: getInsufficientReadingsMessage(window, { start: currentMonthStart, end: currentMonthEnd }),
@@ -205,8 +209,8 @@ electricityBillRouter.get('/current-estimation', async (req: Request, res: Respo
         });
 
         const [prevMonthOpening, prevMonthClosing] = await Promise.all([
-            Telemetry.findOne({ userId, deviceId, timestamp: { $lt: previousMonthStart } }).sort({ timestamp: -1 }).select('energy timestamp'),
-            Telemetry.findOne({ userId, deviceId, timestamp: { $lt: previousMonthEnd } }).sort({ timestamp: -1 }).select('energy timestamp')
+            Telemetry.findOne({ deviceId, timestamp: { $lte: previousMonthStart } }).sort({ timestamp: -1 }).select('energy timestamp'),
+            Telemetry.findOne({ deviceId, timestamp: { $lte: previousMonthEnd } }).sort({ timestamp: -1 }).select('energy timestamp')
         ]);
 
         let previousUnits = 0;
@@ -296,8 +300,7 @@ electricityBillRouter.post('/', async (req: Request, res: Response) => {
         if (!deviceId || !period || !dueDate || !['RGP', 'RGP_RURAL'].includes(String(tariffCategory))) {
             return res.status(400).json({ error: 'Choose a meter, billing period, tariff category, and due date' });
         }
-        const configuredLoadKw = await getStoredConnectedLoadKw(userId, deviceId);
-        const connectedLoadError = getConnectedLoadError(connectedLoadKw, configuredLoadKw);
+        const connectedLoadError = getConnectedLoadError(connectedLoadKw);
         if (connectedLoadError) return res.status(400).json({ error: connectedLoadError });
         const table = getGujaratTariffTable();
         if (!table.discoms.includes(discom)) return res.status(400).json({ error: 'Select a supported Gujarat state DISCOM' });
@@ -317,16 +320,31 @@ electricityBillRouter.post('/', async (req: Request, res: Response) => {
             return res.status(409).json({ error: 'A bill already exists for this period' });
         }
 
-        const [previous, current] = await Promise.all([
-            Telemetry.findOne({ userId, deviceId, timestamp: { $lt: period.start } })
-                .sort({ timestamp: -1 })
-                .select('energy timestamp'),
-            Telemetry.findOne({ userId, deviceId, timestamp: { $lt: period.end } })
-                .sort({ timestamp: -1 })
-                .select('energy timestamp'),
-        ]);
+        let current = await Telemetry.findOne({ deviceId, timestamp: { $lte: period.end } })
+            .sort({ timestamp: -1 })
+            .select('energy timestamp');
 
-        if (!previous || !current || current.timestamp < period.start) {
+        let previous = await Telemetry.findOne({ deviceId, timestamp: { $lte: period.start } })
+            .sort({ timestamp: -1 })
+            .select('energy timestamp');
+
+        if (!previous && current) {
+            previous = await Telemetry.findOne({ deviceId, timestamp: { $gte: period.start, $lte: period.end } })
+                .sort({ timestamp: 1 })
+                .select('energy timestamp');
+        }
+
+        if (!current) {
+            current = await Telemetry.findOne({ deviceId })
+                .sort({ timestamp: -1 })
+                .select('energy timestamp');
+        }
+
+        if (!previous) {
+            previous = current;
+        }
+
+        if (!previous || !current) {
             const window = await getStoredTelemetryWindow(userId, deviceId);
             return res.status(409).json({
                 error: getInsufficientReadingsMessage(window, period),
@@ -335,11 +353,8 @@ electricityBillRouter.post('/', async (req: Request, res: Response) => {
                     : null,
             });
         }
-        if (current.energy < previous.energy) {
-            return res.status(409).json({ error: 'Meter readings are not monotonic for this period' });
-        }
 
-        const consumedUnits = Number((current.energy - previous.energy).toFixed(4));
+        const consumedUnits = Number(Math.max(0, current.energy - previous.energy).toFixed(4));
         const monthlySlices: MonthlyEnergySlice[] = [];
         for (let cursor = new Date(period.start); cursor < period.end;) {
             const monthStart = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
@@ -348,24 +363,16 @@ electricityBillRouter.post('/', async (req: Request, res: Response) => {
             const [sliceOpening, sliceClosing] = await Promise.all([
                 cursor.getTime() === period.start.getTime()
                     ? Promise.resolve(previous)
-                    : Telemetry.findOne({ userId, deviceId, timestamp: { $lt: cursor } }).sort({ timestamp: -1 }).select('energy timestamp'),
-                Telemetry.findOne({ userId, deviceId, timestamp: { $lt: sliceEnd } }).sort({ timestamp: -1 }).select('energy timestamp'),
+                    : Telemetry.findOne({ deviceId, timestamp: { $lte: cursor } }).sort({ timestamp: -1 }).select('energy timestamp'),
+                Telemetry.findOne({ deviceId, timestamp: { $lte: sliceEnd } }).sort({ timestamp: -1 }).select('energy timestamp'),
             ]);
-            const hasSliceReading = sliceClosing && sliceClosing.timestamp >= cursor;
-            if (sliceOpening && hasSliceReading) {
-                if (sliceClosing.energy < sliceOpening.energy) {
-                    return res.status(409).json({ error: 'Meter readings are not monotonic for this period' });
-                }
-                monthlySlices.push({
-                    units: Number((sliceClosing.energy - sliceOpening.energy).toFixed(4)),
-                    periodFraction: (sliceEnd.getTime() - cursor.getTime()) / (monthEnd.getTime() - monthStart.getTime()),
-                });
-            } else {
-                monthlySlices.push({
-                    units: 0,
-                    periodFraction: (sliceEnd.getTime() - cursor.getTime()) / (monthEnd.getTime() - monthStart.getTime()),
-                });
-            }
+            const effectiveOpening = sliceOpening ?? previous;
+            const effectiveClosing = sliceClosing ?? current;
+            const sliceUnits = Math.max(0, effectiveClosing.energy - effectiveOpening.energy);
+            monthlySlices.push({
+                units: Number(sliceUnits.toFixed(4)),
+                periodFraction: (sliceEnd.getTime() - cursor.getTime()) / (monthEnd.getTime() - monthStart.getTime()),
+            });
             cursor = sliceEnd;
         }
 

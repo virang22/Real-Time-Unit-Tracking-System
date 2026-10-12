@@ -11,7 +11,7 @@
 
 // ==================== WIFI ====================
 
-const char *WIFI_SSID = "MyPhone";
+const char *WIFI_SSID = "MyPhone 50";
 const char *WIFI_PASSWORD = "12345678";
 
 // ==================== BACKEND ====================
@@ -34,14 +34,14 @@ Mycila::PZEM pzem;
 
 // ==================== TIMING ====================
 
-const unsigned long SEND_INTERVAL_MS = 2000;
+const unsigned long SEND_INTERVAL_MS = 1000;
 const unsigned long ENERGY_PERSIST_INTERVAL_MS = 60000;
 
 // ==================== ENERGY ====================
 
 Preferences energyStorage;
 
-float accumulatedEnergy = 0.0;
+double accumulatedEnergy = 0.0;
 
 unsigned long lastSendTime = 0;
 unsigned long lastEnergySampleTime = 0;
@@ -65,10 +65,10 @@ uint32_t realEnergyWh = 0;
 
 void persistEnergy() {
 
-  energyStorage.putFloat("totalKwh", accumulatedEnergy);
+  energyStorage.putDouble("totalKwh", accumulatedEnergy);
 
   Serial.print("[Energy] Saved total: ");
-  Serial.print(accumulatedEnergy, 4);
+  Serial.print(accumulatedEnergy, 6);
   Serial.println(" kWh");
 }
 
@@ -158,10 +158,10 @@ void setup() {
   // Energy storage
   energyStorage.begin("energy", false);
 
-  accumulatedEnergy = energyStorage.getFloat("totalKwh", 0.0f);
+  accumulatedEnergy = energyStorage.getDouble("totalKwh", 0.0);
 
   Serial.print("[Energy] Restored total: ");
-  Serial.print(accumulatedEnergy, 4);
+  Serial.print(accumulatedEnergy, 6);
   Serial.println(" kWh");
 
   // Start PZEM
@@ -318,14 +318,16 @@ void readAndTransmitTelemetry() {
 
   unsigned long now = millis();
 
-  float elapsedHours = (now - lastEnergySampleTime) / 3600000.0f;
-
-  if (power > 0.0f && elapsedHours > 0.0f) {
-
-    accumulatedEnergy += (power * elapsedHours) / 1000.0f;
+  if (lastEnergySampleTime == 0) {
+    lastEnergySampleTime = now;
   }
 
+  double elapsedSeconds = (now - lastEnergySampleTime) / 1000.0;
   lastEnergySampleTime = now;
+
+  if (power > 0.0f && elapsedSeconds > 0.0 && elapsedSeconds < 10.0) {
+    accumulatedEnergy += (power * (elapsedSeconds / 3600.0)) / 1000.0;
+  }
 
   // Save energy
   if (now - lastEnergyPersistTime >= ENERGY_PERSIST_INTERVAL_MS) {
@@ -349,7 +351,9 @@ void readAndTransmitTelemetry() {
 
   doc["power"] = power;
 
-  doc["energy"] = accumulatedEnergy;
+  char energyStr[32];
+  snprintf(energyStr, sizeof(energyStr), "%.6f", accumulatedEnergy);
+  doc["energy"] = serialized(energyStr);
 
   doc["frequency"] = frequency;
 
